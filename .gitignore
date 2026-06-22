@@ -25,3 +25,9 @@ Thumbs.db
 build/
 dist/
 *.spec
+
+# Generated fixed YAML files
+fixed/*.yaml
+fixed/*.yml
+fixed/*.html
+!fixed/.gitkeep

@@ -1,0 +1,15 @@
+auto_fix:
+  enabled: true
+  mode: safe
+
+  safe_rules:
+    - privileged
+    - allowPrivilegeEscalation
+    - hostNetwork
+    - hostPID
+    - hostIPC
+    - securityContext
+    - seccompProfile
+
+  strict_rules:
+    - readOnlyRootFilesystem
