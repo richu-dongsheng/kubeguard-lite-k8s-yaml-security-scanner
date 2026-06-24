@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: danger-pod
+  namespace: default
+spec:
+  hostNetwork: true
+  containers:
+    - name: app
+      image: nginx:latest
+      securityContext:
+        privileged: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: danger-deploy
+  namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: danger
+  template:
+    metadata:
+      labels:
+        app: danger
+    spec:
+      containers:
+        - name: web
+          image: busybox
+          command: ["sh", "-c"]
+          args: ["sleep 3600"]
