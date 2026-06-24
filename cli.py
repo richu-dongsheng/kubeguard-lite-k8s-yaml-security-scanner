@@ -4,7 +4,7 @@ import typer      #快速做命令行工具的库
 from rich.console import Console #终端美化库，console用于在终端打印彩色文字和格式化内容
 from rich.table import Table  #生成终端里整齐的表格
 
-from scanner.parser import get_resource_identity,load_yaml_directory
+from scanner.parser import get_resource_identity,load_yaml_path
 from scanner.pod_scanner import scan_resources
 
 #创建typer实例，名为app，help为工具的全局说明
@@ -28,7 +28,7 @@ def scan(path: str):  #字符串参数作为路径
     target = Path(path)
 
     try:
-        resources = load_yaml_directory(target)
+        resources = load_yaml_path(target)
     except Exception as exc:
         console.print(f"[red]扫描失败：{exc}[/red]")
 
@@ -87,14 +87,14 @@ def scan(path: str):  #字符串参数作为路径
     #三等风险数统计
     high_count = sum(1 for risk in risks if risk["level"] == "HIGH")
     medium_count = sum(1 for risk in risks if risk["level"] == 'MEDIUM')
-    low_count = sum(1 for risk in risks if risk["level"] == "low")
+    low_count = sum(1 for risk in risks if risk["level"] == "LOW")
 
     console.print(
-    f"[bold]风险统计：[/bold]"
-    f"[red]HIGH = {high_count}[/red],"
-    f"[yellow]MEDIUM = {medium_count}[/yellow],"
-    f"[blue]LOW = {low_count}[/blue]",
-    f"[purple]TOTAL = {len(risks)}[/purple]"
+    f"[bold]风险统计：[/bold]\n\n"
+    f"[red] HIGH = {high_count}[/red]\n\n"
+    f"[yellow] MEDIUM = {medium_count}[/yellow]\n\n"
+    f"[blue] LOW = {low_count}[/blue]\n\n"
+    f"[purple] TOTAL = {len(risks)}[/purple]\n\n"
 )
 
 
