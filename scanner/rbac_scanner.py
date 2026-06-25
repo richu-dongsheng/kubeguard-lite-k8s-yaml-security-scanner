@@ -418,12 +418,13 @@ def scan_binding_expanded_permissions(
                 subject=subject_text,
                 binding=binding_ref,
                 path=f"{binding_ref} -> {referenced_ref}.{finding['path']}",
-                message=f"{subject_text} 通过 {binding_ref} 获得危险权限：{finding['message']}",
+                message=f"{subject_text} 会通过 {binding_ref} 获得危险权限：{finding['message']}",
                 reason=finding["reason"],
                 suggestion=finding["suggestion"],
             ))
 
     return risks
+    
     
 """总入口：扫描资源列表中的全部RBAC风险"""
 def scan_rbac_resources(resources: list[YamlResource]) -> list[Risk]:
