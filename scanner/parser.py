@@ -129,12 +129,29 @@ def load_yaml_path(target_path: str | Path) -> list[YamlResource]:
 def get_resource_identity(resource: YamlResource) -> dict[str, str]:
     """标准化提取 Kubernetes 资源的基本身份信息。"""
     metadata = resource.get("metadata") or {}
+    
+    CLUSTER_SCOPED_KINDS = {
+        "Namespace",
+        "Node",
+        "PersistentVolume",
+        "ClusterRole",
+        "ClusterRoleBinding",
+    }
+    
+    kind = str(resource.get("kind", "Unknown"))
+
+    if kind in CLUSTER_SCOPED_KINDS:
+        namespace = "cluster-scope"
+    else:
+        namespace = str(metadata.get("namespace", "default"))
+
+
 
     return {
         "apiVersion": str(resource.get("apiVersion", "unknown")),
         "kind": str(resource.get("kind", "Unknown")),
         "name": str(metadata.get("name", "unknown")),
-        "namespace": str(metadata.get("namespace", "default")),
+        "namespace":str(namespace),
         "source_file": str(resource.get("_source_file", "unknown")),
         "document_index": str(resource.get("_document_index", "unknown")),
     }

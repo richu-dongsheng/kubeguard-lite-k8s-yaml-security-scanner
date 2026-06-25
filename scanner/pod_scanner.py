@@ -205,7 +205,7 @@ def scan_pod_level_risks(
 
     return risks
 
-"""检测函数2：扫描volume中的 hostPath 风险"""
+"""扫描函数2：扫描volume中的 hostPath 风险"""
 def scan_volume_risks(
     pod_spec: dict[str,Any],
     *,
@@ -247,7 +247,7 @@ def scan_volume_risks(
 
     return risks
 
-"""检测函数3：扫描 containers中的安全风险"""
+"""扫描函数3：扫描 containers中的安全风险"""
 def scan_container_risks(
     pod_spec: dict[str,Any],
     *,
@@ -422,7 +422,7 @@ def scan_container_risks(
 
 
 
-"""单个文件扫描函数总入口：扫描单个kubernetes工作负载资源"""
+"""单个文件扫描函数入口：扫描单个kubernetes工作负载资源"""
 def scan_workload(resource: YamlResource) -> list[Risk]:
     pod_spec = get_pod_spec(resource)
 
@@ -458,7 +458,7 @@ def scan_workload(resource: YamlResource) -> list[Risk]:
 
 
 """文件（夹）扫描总入口"""
-def scan_resources(resources: list[YamlResource]) -> list[Risk]:
+def scan_pod_resources(resources: list[YamlResource]) -> list[Risk]:
     all_risks: list[Risk] = []
 
     for resource in resources:
