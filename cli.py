@@ -7,6 +7,7 @@ from rich.table import Table  #生成终端里整齐的表格
 from scanner.parser import get_resource_identity,load_yaml_path
 from scanner.pod_scanner import scan_pod_resources
 from scanner.rbac_scanner import scan_rbac_resources
+from scanner.service_scanner import scan_service_resources
 
 #创建typer实例，名为app，help为工具的全局说明
 cli = typer.Typer(
@@ -60,7 +61,7 @@ def scan(path: str):  #字符串参数作为路径
     risks = []
     risks.extend(scan_pod_resources(resources))
     risks.extend(scan_rbac_resources(resources))
-
+    risks.extend(scan_service_resources(resources))
 
     if not risks:
         console.print("[green]未发现 Pod / Deployment 配置风险。[/green]")
@@ -80,12 +81,11 @@ def scan(path: str):  #字符串参数作为路径
         actor = risk.get("subject") or risk.get("container") or "-"
 
         risk_table.add_row(
-            str(index),
+           str(index),
             risk.get("category", "Workload"),
             risk["level"],
             risk["rule_id"],
             risk["resource"],
-            risk["container"],
             actor,
             risk["message"],
             "YES" if risk["auto_fixable"] else "NO",
