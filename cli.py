@@ -8,6 +8,9 @@ from rich.table import Table
 from scanner.parser import get_resource_identity
 from scanner.scan_engine import scan_path, get_resources, get_risks, get_summary
 
+from reporter.markdown_report import generate_markdown_report
+from reporter.html_report import generate_html_report
+
 
 YamlResource = dict[str, Any]
 Risk = dict[str, Any]
@@ -190,6 +193,74 @@ def scan(path: str):
     render_score_summary(summary)
     render_auto_fix_summary(risks)
     render_recommendations(summary)
+
+
+
+"""生成 kubernetes YANL 安全扫描报告"""
+@cli.command()
+def report(
+    path: str,          #路径参数
+    report_format: str = typer.Option(
+        "md",
+        "--format",
+        "-f",
+        help = "报告格式: md 或 html",
+    ),
+    output: str | None = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help = "报告输出路径，例如 reports/report.md"
+    ),
+):
+    target = Path(path)
+
+    try:
+        scan_result = scan_path(target)
+    except Exception as exc:
+        console.print(f"[red]报告生成失败：{exc}[/red]")
+        raise typer.Exit(code=1)
+    
+    resources = get_resources(scan_result)
+    risks = get_risks(scan_result)
+    summary = get_summary(scan_result)
+
+    normalized_format = report_format.lower().strip()
+
+    if normalized_format not in {"md","html"}:
+        console.print("[red]报告格式错误：只支持 md 或 html.[/red]")
+        raise typer.Exit(code=1)
+    
+    if output is None:  #默认路径
+        output_path = Path("reports") / f"kubeguard-report.{normalized_format}"
+    else:               #自选路径
+        output_path = Path(output)
+
+    #自动递归创建输出文件所在全部目录，目录存在也不会报错，parents=True为递归创建各级目录，exist_ok为即使目录存在也不报错
+    output_path.parent.mkdir(parents=True,exist_ok=True)
+
+    if normalized_format == "md":
+        content = generate_markdown_report(
+            resources = resources,
+            risks = risks,
+            summary = summary,
+            target_path = str(target)
+        )
+    else:
+        content = generate_html_report(
+            resources=resources,
+            risks=risks,
+            summary=summary,
+            target_path=str(target)
+        )
+
+    output_path.write_text(content,encoding="utf-8")
+
+    console.print(f"[green]报告生成成功：{output_path}[/green]")
+    console.print(f"[green]风险总数：{summary.get('total_risks',0)}[/green]")
+    console.print(f"[green]整体评级：{summary.get('grade','-')}({summary.get('grade_label','-')})[/green]")
+
+
 
 
 if __name__ == "__main__":
