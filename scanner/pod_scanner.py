@@ -137,7 +137,7 @@ def scan_pod_level_risks(
     if pod_spec.get("hostNetwork") is True:
         risks.append(make_risk(
             level = "HIGH",
-            rule_id = "KGI-POD-001",
+            rule_id = "KGL-POD-001",
             resource = resource,
             namespace = namespace,
             source_file = source_file,

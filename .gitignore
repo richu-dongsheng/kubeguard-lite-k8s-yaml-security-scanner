@@ -31,3 +31,5 @@ fixed/*.yaml
 fixed/*.yml
 fixed/*.html
 !fixed/.gitkeep
+fixed/
+fixed-*/

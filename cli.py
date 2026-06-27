@@ -11,6 +11,7 @@ from scanner.scan_engine import scan_path, get_resources, get_risks, get_summary
 from reporter.markdown_report import generate_markdown_report
 from reporter.html_report import generate_html_report
 
+from fixer.yaml_fixer import fix_path
 
 YamlResource = dict[str, Any]
 Risk = dict[str, Any]
@@ -166,6 +167,93 @@ def render_recommendations(summary: ScanSummary) -> None:
 
     console.print()
 
+def render_fix_actions_table(actions: list[dict[str, object]], title: str, limit: int = 20) -> None:
+    """渲染修复动作表。"""
+    if not actions:
+        console.print(f"[yellow]{title}：无[/yellow]")
+        return
+
+    table = Table(
+        title=title,
+        show_lines=True,
+    )
+
+    table.add_column("序号", justify="right", no_wrap=True)
+    table.add_column("状态", no_wrap=True)
+    table.add_column("规则", no_wrap=True)
+    table.add_column("资源")
+    table.add_column("路径")
+    table.add_column("旧值")
+    table.add_column("新值")
+    table.add_column("说明")
+
+    for index, action in enumerate(actions[:limit], start=1):
+        table.add_row(
+            str(index),
+            str(action.get("status", "-")),
+            str(action.get("rule_id", "-")),
+            str(action.get("resource", "-")),
+            str(action.get("path", "-")),
+            str(action.get("old_value", "-")),
+            str(action.get("new_value", "-")),
+            str(action.get("message", "-")),
+        )
+
+    console.print(table)
+
+    if len(actions) > limit:
+        console.print(
+            f"[yellow]仅展示前 {limit} 条，实际共有 {len(actions)} 条。[/yellow]"
+        )
+
+
+def render_fix_summary(fix_summary: dict[str, object]) -> None:
+    """渲染自动修复汇总结果。"""
+    fixed_actions = fix_summary.get("fixed_actions", [])
+    skipped_actions = fix_summary.get("skipped_actions", [])
+    written_files = fix_summary.get("written_files", [])
+
+    if not isinstance(fixed_actions, list):
+        fixed_actions = []
+
+    if not isinstance(skipped_actions, list):
+        skipped_actions = []
+
+    if not isinstance(written_files, list):
+        written_files = []
+
+    console.print()
+    console.print("[bold]自动修复汇总：[/bold]")
+    console.print(f"修复模式 = {fix_summary.get('mode', '-')}")
+    console.print(f"[green]已修复动作数 = {fix_summary.get('fixed_count', 0)}[/green]")
+    console.print(f"[yellow]跳过风险数 = {fix_summary.get('skipped_count', 0)}[/yellow]")
+    console.print(f"写入文件数 = {fix_summary.get('written_file_count', 0)}")
+
+    console.print()
+    console.print("[bold]输出文件：[/bold]")
+
+    if written_files:
+        for file_path in written_files:
+            console.print(f"- {file_path}")
+    else:
+        console.print("[yellow]没有生成修复后的 YAML 文件。[/yellow]")
+
+    console.print()
+    render_fix_actions_table(
+        fixed_actions,
+        title="已自动修复动作",
+        limit=20,
+    )
+
+    console.print()
+    render_fix_actions_table(
+        skipped_actions,
+        title="未自动修复风险摘要",
+        limit=20,
+    )
+
+
+
 
 @cli.command()
 def scan(path: str):
@@ -261,7 +349,45 @@ def report(
     console.print(f"[green]整体评级：{summary.get('grade','-')}({summary.get('grade_label','-')})[/green]")
 
 
+@cli.command()
+def fix(
+    path: str,
+    output: str = typer.Option(
+        "fixed",
+        "--output",
+        "-o",
+        help="修复后 YAML 的输出目录，默认 fixed",
+    ),
+    mode: str = typer.Option(
+        "safe",
+        "--mode",
+        "-m",
+        help="修复模式：safe 或 strict",
+    ),
+):
+    """自动修复 Kubernetes YAML 中的部分安全风险。"""
+    target = Path(path)
 
+    try:
+        result = fix_path(
+            target_path=target,
+            output_dir=output,
+            mode=mode,
+        )
+    except Exception as exc:
+        console.print(f"[red]自动修复失败：{exc}[/red]")
+        raise typer.Exit(code=1)
+
+    fix_summary = result["fix_summary"]
+
+    console.print("[green]自动修复流程完成。[/green]")
+    render_fix_summary(fix_summary)
+
+    console.print()
+    console.print("[bold]后续建议：[/bold]")
+    console.print(f"- 请人工检查输出目录：{output}")
+    console.print(f"- 建议重新扫描修复结果：python cli.py scan {output}")
+    console.print("- 对 RBAC、Service、Ingress、镜像版本等风险，请结合业务场景人工处理。")
 
 if __name__ == "__main__":
     cli()
