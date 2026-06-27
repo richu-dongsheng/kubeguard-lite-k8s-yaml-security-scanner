@@ -4,28 +4,30 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QAction
+from PySide6.QtCore import QEvent,QObject,Qt, QThread, Signal,QPoint
+from PySide6.QtGui import QAction, QMouseEvent
+
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenuBar,
     QMessageBox,
     QPushButton,
     QComboBox,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTextBrowser,
     QTextEdit,
     QVBoxLayout,
     QWidget,
-    QGroupBox,
+    QGroupBox
 )
-
-from PySide6.QtCore import Qt as QtCore
 
 from fixer.fix_report import generate_fix_html_report, generate_fix_markdown_report
 from fixer.yaml_fixer import fix_path
@@ -34,6 +36,12 @@ from reporter.markdown_report import generate_markdown_report
 from scanner.parser import get_resource_identity
 from scanner.scan_engine import get_resources, get_risks, get_summary, scan_path
 
+from desktop_help import (
+    HelpDocumentDialog,
+    get_design_notes_html,
+    get_rule_details_html,
+    get_usage_guide_html,
+)
 
 ScanResult = dict[str, Any]
 FixResult = dict[str, Any]
@@ -89,6 +97,11 @@ class KubeguardDesktop(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
 
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
+
+        self.drag_position = QPoint()
+        self.is_dragging = False
+
         self.scan_result: ScanResult | None = None
         self.fix_result: FixResult | None = None
 
@@ -107,7 +120,54 @@ class KubeguardDesktop(QMainWindow):
     # -------------------------------------------------------------------------
 
     def init_menu(self) -> None:
-        menu_bar = self.menuBar()
+        """初始化自定义标题栏和中文菜单栏。"""
+        header_widget = QWidget()
+        header_widget.setObjectName("appHeader")
+
+        header_layout = QVBoxLayout(header_widget)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(0)
+
+        self.title_bar = QFrame()
+        self.title_bar.setObjectName("appTitleBar")
+        self.title_bar.setFixedHeight(46)
+
+        title_layout = QHBoxLayout(self.title_bar)
+        title_layout.setContentsMargins(16, 0, 10, 0)
+        title_layout.setSpacing(10)
+
+        self.title_label = QLabel("🛡️ kubeguard-Lite 云原生 YAML 安全扫描与自动修复工具")
+        self.title_label.setObjectName("appTitleLabel")
+
+        title_layout.addWidget(self.title_label)
+        title_layout.addStretch()
+
+        self.minimize_button = QPushButton("—")
+        self.minimize_button.setObjectName("windowControlButton")
+        self.minimize_button.setFixedSize(38, 30)
+        self.minimize_button.clicked.connect(self.showMinimized)
+
+        self.maximize_button = QPushButton("□")
+        self.maximize_button.setObjectName("windowControlButton")
+        self.maximize_button.setFixedSize(38, 30)
+        self.maximize_button.clicked.connect(self.toggle_maximize_restore)
+
+        self.close_button = QPushButton("✕")
+        self.close_button.setObjectName("windowCloseButton")
+        self.close_button.setFixedSize(38, 30)
+        self.close_button.clicked.connect(self.close)
+
+        title_layout.addWidget(self.minimize_button)
+        title_layout.addWidget(self.maximize_button)
+        title_layout.addWidget(self.close_button)
+
+        self.title_bar.installEventFilter(self)
+        self.title_label.installEventFilter(self)
+
+        header_layout.addWidget(self.title_bar)
+
+        menu_bar = QMenuBar()
+        menu_bar.setObjectName("appMenuBar")
 
         exit_menu = menu_bar.addMenu("退出")
 
@@ -117,15 +177,83 @@ class KubeguardDesktop(QMainWindow):
 
         help_menu = menu_bar.addMenu("帮助")
 
-        help_action = QAction("技术文档与使用说明", self)
-        help_action.triggered.connect(self.show_help)
-        help_menu.addAction(help_action)
+        usage_action = QAction("使用指南", self)
+        usage_action.triggered.connect(self.show_usage_guide)
+        help_menu.addAction(usage_action)
+
+        rule_action = QAction("规则细则", self)
+        rule_action.triggered.connect(self.show_rule_details)
+        help_menu.addAction(rule_action)
+
+        design_action = QAction("设计说明", self)
+        design_action.triggered.connect(self.show_design_notes)
+        help_menu.addAction(design_action)
 
         about_menu = menu_bar.addMenu("关于")
 
         about_action = QAction("关于项目", self)
         about_action.triggered.connect(self.show_about)
         about_menu.addAction(about_action)
+
+        header_layout.addWidget(menu_bar)
+
+        self.setMenuWidget(header_widget)
+
+    
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """处理自定义标题栏拖动和双击最大化。"""
+        title_widgets = {
+            getattr(self, "title_bar", None),
+            getattr(self, "title_label", None),
+        }
+
+        if watched in title_widgets and isinstance(event, QMouseEvent):
+            if event.type() == QEvent.Type.MouseButtonDblClick:
+                if event.button() == Qt.MouseButton.LeftButton:
+                    self.toggle_maximize_restore()
+                    return True
+
+            if event.type() == QEvent.Type.MouseButtonPress:
+                if event.button() == Qt.MouseButton.LeftButton:
+                    self.is_dragging = True
+                    self.drag_position = (
+                        event.globalPosition().toPoint()
+                        - self.frameGeometry().topLeft()
+                    )
+                    return True
+
+            if event.type() == QEvent.Type.MouseMove:
+                if self.is_dragging and event.buttons() & Qt.MouseButton.LeftButton:
+                    if not self.isMaximized():
+                        self.move(event.globalPosition().toPoint() - self.drag_position)
+                    return True
+
+            if event.type() == QEvent.Type.MouseButtonRelease:
+                self.is_dragging = False
+                self.drag_position = QPoint()
+                return True
+
+        return super().eventFilter(watched, event)
+
+
+    def toggle_maximize_restore(self) -> None:
+        """最大化 / 还原主窗口。"""
+        if self.isMaximized():
+            self.showNormal()
+            self.maximize_button.setText("□")
+        else:
+            self.showMaximized()
+            self.maximize_button.setText("❐")
+
+
+    def changeEvent(self, event: QEvent) -> None:
+        """同步最大化按钮状态。"""
+        super().changeEvent(event)
+
+        if event.type() == QEvent.Type.WindowStateChange:
+            if hasattr(self, "maximize_button"):
+                self.maximize_button.setText("❐" if self.isMaximized() else "□")
+
 
     def apply_dark_theme(self) -> None:
         """应用紫黑色桌面端主题。"""
@@ -141,13 +269,67 @@ class KubeguardDesktop(QMainWindow):
             font-size: 14px;
         }
 
-        QMenuBar {
-            background-color: #1b0f2e;
-            color: #f1e7ff;
-            padding: 6px;
+         QWidget#appHeader {
+            background-color: #12081f;
+        }
+
+        QFrame#appTitleBar {
+            background-color: #0b0613;
             border-bottom: 1px solid #3b2463;
         }
 
+        QLabel#appTitleLabel {
+            color: #f5f3ff;
+            font-size: 15px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+        }
+
+        QPushButton#windowControlButton {
+            background-color: transparent;
+            color: #ddd6fe;
+            border: 1px solid transparent;
+            border-radius: 7px;
+            font-size: 15px;
+            font-weight: 700;
+        }
+
+        QPushButton#windowControlButton:hover {
+            background-color: #312e81;
+            color: #ffffff;
+            border: 1px solid #6d28d9;
+        }
+
+        QPushButton#windowControlButton:pressed {
+            background-color: #4c1d95;
+        }
+
+        QPushButton#windowCloseButton {
+            background-color: transparent;
+            color: #fecaca;
+            border: 1px solid transparent;
+            border-radius: 7px;
+            font-size: 15px;
+            font-weight: 700;
+        }
+
+        QPushButton#windowCloseButton:hover {
+            background-color: #dc2626;
+            color: #ffffff;
+            border: 1px solid #ef4444;
+        }
+
+        QPushButton#windowCloseButton:pressed {
+            background-color: #991b1b;
+        }                  
+                           
+
+        QMenuBar {
+            background-color: #160a27;
+            color: #f1e7ff;
+            padding: 5px 12px;
+            border-bottom: 1px solid #3b2463;
+        }
         QMenuBar::item {
             background: transparent;
             padding: 6px 14px;
@@ -1046,18 +1228,30 @@ class KubeguardDesktop(QMainWindow):
             "并自动修改部分危险配置，属于面向云原生环境的安全检测工具。"
         )
 
-    def show_help(self) -> None:
-        QMessageBox.information(
-            self,
-            "帮助 - 技术文档与使用说明",
-            "技术文档与使用说明将在后续版本中接入。\n\n"
-            "计划内容包括：\n"
-            "1. 工具使用流程说明\n"
-            "2. 扫描规则说明\n"
-            "3. 自动修复策略说明\n"
-            "4. Windows / Linux 打包与运行说明\n"
-            "5. 项目技术架构说明"
-    )
+    def show_help_document(self, title: str, html: str) -> None:
+        dialog = HelpDocumentDialog(title, html, self)
+        dialog.exec()
+
+
+    def show_usage_guide(self) -> None:
+        self.show_help_document(
+            "使用指南",
+            get_usage_guide_html(),
+        )
+
+
+    def show_rule_details(self) -> None:
+        self.show_help_document(
+            "规则细则",
+            get_rule_details_html(),
+        )
+
+
+    def show_design_notes(self) -> None:
+        self.show_help_document(
+            "设计说明",
+            get_design_notes_html(),
+        )
 
 def main() -> None:
     app = QApplication(sys.argv)
