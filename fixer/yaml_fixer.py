@@ -7,7 +7,7 @@ from typing import Any, Literal
 import yaml
 
 from scanner.parser import get_resource_identity
-from scanner.scan_engine import get_resources, get_risks, scan_path
+from scanner.scan_engine import get_resources, get_risks, scan_path, scan_resources
 
 
 YamlResource = dict[str, Any]
@@ -980,6 +980,8 @@ def fix_path(
         changed_source_files=changed_source_files,
     )
 
+    fixed_scan_result = scan_resources(fixed_resources)
+
     summary = build_fix_summary(
         mode=normalized_mode,
         fixed_actions=fixed_actions,
@@ -989,6 +991,7 @@ def fix_path(
 
     return {
         "scan_result": scan_result,
+        "fixed_scan_result": fixed_scan_result,
         "fixed_resources": fixed_resources,
         "fix_summary": summary,
     }

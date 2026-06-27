@@ -12,6 +12,7 @@ from reporter.markdown_report import generate_markdown_report
 from reporter.html_report import generate_html_report
 
 from fixer.yaml_fixer import fix_path
+from fixer.fix_report import generate_fix_markdown_report, generate_fix_html_report
 
 YamlResource = dict[str, Any]
 Risk = dict[str, Any]
@@ -364,6 +365,16 @@ def fix(
         "-m",
         help="修复模式：safe 或 strict",
     ),
+    fix_report_format: str = typer.Option(
+        "md",
+        "--fix-report-format",
+        help="自动修复报告格式：md 或 html",
+    ),
+    fix_report_output: str | None = typer.Option(
+        None,
+        "--fix-report",
+        help="自动修复报告输出路径，例如 reports/fix-report.md",
+    ),
 ):
     """自动修复 Kubernetes YAML 中的部分安全风险。"""
     target = Path(path)
@@ -382,6 +393,44 @@ def fix(
 
     console.print("[green]自动修复流程完成。[/green]")
     render_fix_summary(fix_summary)
+
+    original_scan_result = result["scan_result"]
+    fixed_scan_result = result["fixed_scan_result"]
+
+    normalized_report_format = fix_report_format.lower().strip()
+
+    if normalized_report_format not in {"md", "html"}:
+        console.print("[red]自动修复报告格式错误：只支持 md 或 html。[/red]")
+        raise typer.Exit(code=1)
+
+    if fix_report_output is None:
+        report_output_path = Path("reports") / f"fix-report.{normalized_report_format}"
+    else:
+        report_output_path = Path(fix_report_output)
+
+    report_output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if normalized_report_format == "md":
+        report_content = generate_fix_markdown_report(
+            fix_summary=fix_summary,
+            original_scan_result=original_scan_result,
+            fixed_scan_result=fixed_scan_result,
+            target_path=str(target),
+            output_dir=str(output),
+        )
+    else:
+        report_content = generate_fix_html_report(
+            fix_summary=fix_summary,
+            original_scan_result=original_scan_result,
+            fixed_scan_result=fixed_scan_result,
+            target_path=str(target),
+            output_dir=str(output),
+        )
+
+    report_output_path.write_text(report_content, encoding="utf-8")
+
+    console.print()
+    console.print(f"[green]自动修复报告已生成：{report_output_path}[/green]")
 
     console.print()
     console.print("[bold]后续建议：[/bold]")
