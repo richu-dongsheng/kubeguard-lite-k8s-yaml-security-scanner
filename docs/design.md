@@ -363,7 +363,49 @@ fix_path()
 
 ---
 
-## 十一、项目局限性
+## 十一、多入口设计说明
+
+kubeguard-Lite 提供三种使用入口：
+
+| 入口          | 文件           | 定位                           |
+| ----------- | ------------ | ---------------------------- |
+| CLI         | `cli.py`     | 面向命令行使用、脚本调用和后续 DevSecOps 集成 |
+| Web Demo    | `website.py` | 面向本地快速演示、上传 YAML 扫描和报告下载     |
+| Desktop App | `desktop.py` | 面向普通用户的图形化桌面工具，是当前主要发布形态     |
+
+三种入口复用同一套后端能力：
+
+```text
+scanner/scan_engine.py
+fixer/yaml_fixer.py
+fixer/fix_report.py
+reporter/markdown_report.py
+reporter/html_report.py
+```
+
+因此，CLI、Web Demo 和 Desktop App 并不是三套独立实现，而是共享扫描、评分、修复和报告模块。
+
+Web Demo 使用 Streamlit 实现，主要用于本地展示和功能验证。它可以快速展示 YAML 扫描、自动修复、修复前后对比和报告下载能力，但不是当前项目的主发布形态。
+
+Desktop App 使用 PySide6 实现，支持 Windows exe 和 Linux AppImage 打包，是当前更完整的用户交付形态。
+
+## 依赖分层设计
+
+项目依赖分为两类：
+
+1. `requirements.txt`
+   用于源码运行，包含 CLI、Web Demo 和 Desktop App 所需的直接依赖。
+
+2. `requirements-build.txt`
+   用于桌面端打包，主要包含 PyInstaller。
+
+这种拆分可以避免把打包工具和大量平台相关依赖混入普通运行依赖中，也能减少用户安装失败的概率。
+
+
+
+
+
+## 十二、项目局限性
 
 当前版本仍有一些限制：
 
@@ -376,7 +418,7 @@ fix_path()
 
 ---
 
-## 十二、后续规划
+## 十三、后续规划
 
 后续可以考虑继续扩展：
 
@@ -391,7 +433,7 @@ fix_path()
 
 ---
 
-## 十三、总结
+## 十四、总结
 
 kubeguard-Lite 的核心价值是：在资源部署前，通过静态分析 Kubernetes YAML 文件，提前识别云原生配置错误带来的攻击面，并对部分明确危险配置进行自动修复。
 
