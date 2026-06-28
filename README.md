@@ -205,8 +205,8 @@ kubeguard-lite/
 │   └── insecure/
 └── docs/
     ├── design.md
-    ├── practice_report.md
-    └── rule_description.md
+    ├── practice-report.md
+    └── rule-description.md
 ```
 
 ---
@@ -216,8 +216,8 @@ kubeguard-lite/
 更多说明见 `docs/` 目录：
 
 * `docs/design.md`：项目设计说明、架构设计和规则设计依据
-* `docs/rule_description.md`：扫描规则、危险系数和自动修复支持情况
-* `docs/practice_report.md`：项目实践报告和开发过程总结
+* `docs/rule-description.md`：扫描规则、危险系数和自动修复支持情况
+* `docs/practice-report.md`：项目实践报告和开发过程总结
 
 ---
 
