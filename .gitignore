@@ -25,6 +25,8 @@ Thumbs.db
 build/
 dist/
 *.spec
+*.exe
+*.AppImage
 
 # Generated fixed YAML files
 fixed/*.yaml
