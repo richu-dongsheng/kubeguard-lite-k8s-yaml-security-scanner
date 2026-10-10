@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: safe-document
+spec:
+  automountServiceAccountToken: false
+  containers:
+    - name: app
+      image: nginx:1.27
+      securityContext:
+        privileged: false
+        allowPrivilegeEscalation: false
+        runAsUser: 1000
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+        readOnlyRootFilesystem: true
+      resources:
+        limits:
+          cpu: "1"
+          memory: 512Mi
+---
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: risky-document
+spec:
+  hostNetwork: true
+  automountServiceAccountToken: false
+  containers:
+    - name: app
+      image: nginx:1.27

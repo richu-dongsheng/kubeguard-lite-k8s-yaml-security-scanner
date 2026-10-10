@@ -12,6 +12,17 @@ Risk = dict[str,Any]
 ScanSummary = dict[str,Any]
 ScanResult = dict[str,Any]
 
+SCANNED_RESOURCE_KINDS = {
+    "Pod",
+    "Deployment",
+    "Role",
+    "ClusterRole",
+    "RoleBinding",
+    "ClusterRoleBinding",
+    "Service",
+    "Ingress",
+}
+
 
 """
 对已经解析好的 kubernetes resource 执行完整安全扫描
@@ -20,6 +31,17 @@ web: 上传 YAML 后，先解析为resources再调用本函数
 Desktop: 读取文件后，复用本函数
 """
 def scan_resources(resources: list[YamlResource]) -> ScanResult:
+
+    if not resources:
+        raise ValueError("扫描输入中没有有效 Kubernetes 资源，无法判定扫描结果。")
+
+    scanned_kinds = {
+        str(resource.get("kind", "")).strip()
+        for resource in resources
+        if isinstance(resource, dict)
+    }
+    if not scanned_kinds.intersection(SCANNED_RESOURCE_KINDS):
+        raise ValueError("扫描输入中没有当前扫描器支持的资源 Kind，无法判定扫描结果。")
     
     risks: list[Risk] = []
 

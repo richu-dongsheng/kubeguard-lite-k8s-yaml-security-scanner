@@ -15,6 +15,19 @@ SENSITIVE_HOST_PATHS = [
     "/run/containerd/containerd.sock",
 ]
 
+# Kubernetes v1.35 中，当前规则涉及且可由 PodSecurityContext 默认到容器的字段。
+POD_INHERITABLE_SECURITY_CONTEXT_FIELDS = frozenset({
+    "runAsUser",
+    "runAsNonRoot",
+    "seccompProfile",
+})
+# 当前规则涉及的容器专属字段，不采纳同名 Pod 级字段。
+CONTAINER_SECURITY_CONTEXT_FIELDS = frozenset({
+    "privileged",
+    "allowPrivilegeEscalation",
+    "readOnlyRootFilesystem",
+})
+
 """统一生成风险记录"""
 def make_risk(
     *,
@@ -62,6 +75,13 @@ def get_pod_spec(resource: YamlResource) -> dict[str,Any] | None:
         return spec if isinstance(spec,dict) else None
     return None 
 
+
+def get_pod_spec_path(resource: YamlResource) -> str:
+    """返回 PodSpec 在原始资源中的字段路径。"""
+    if resource.get("kind") == "Deployment":
+        return "spec.template.spec"
+    return "spec"
+
 """返回资源标识信息：resource_ref,namespace,source_file,kind"""
 def get_resource_ref(resource: YamlResource) -> tuple[str,str,str,str]:
     identity = get_resource_identity(resource)
@@ -105,7 +125,7 @@ def is_unpinned_image(image: str) -> bool:
 
     return tag == "latest" #如果是latest,返回true,反之返回false
 
-"""合并Pod全局安全上下文 和 容器自身安全上下文，容器配置优先高于Pod全局配置"""
+"""只合并可由 Pod 级默认的字段，并让容器级配置优先。"""
 def get_effective_security_context(pod_spec:dict[str,Any], container:dict[str,Any]) -> tuple[dict[str,Any],bool]:
     pod_security_context = pod_spec.get("securityContext") or {}
     container_security_context = container.get("securityContext")
@@ -114,13 +134,20 @@ def get_effective_security_context(pod_spec:dict[str,Any], container:dict[str,An
 
     effective_security_context = {}
 
-    #加载pod全局配置
+    # 只有 Kubernetes PodSecurityContext 中可继承到容器的字段才使用 Pod 默认值。
     if isinstance(pod_security_context,dict):
-        effective_security_context.update(pod_security_context)
+        for field_name in POD_INHERITABLE_SECURITY_CONTEXT_FIELDS:
+            if field_name in pod_security_context:
+                effective_security_context[field_name] = pod_security_context[field_name]
 
-    #容器配置覆盖Pod配置
+    # 仅采纳本扫描器实际识别的容器字段；Pod 级非法字段不会成为容器配置。
     if isinstance(container_security_context,dict):
-        effective_security_context.update(container_security_context)
+        for field_name in (
+            POD_INHERITABLE_SECURITY_CONTEXT_FIELDS
+            | CONTAINER_SECURITY_CONTEXT_FIELDS
+        ):
+            if field_name in container_security_context:
+                effective_security_context[field_name] = container_security_context[field_name]
     
     return effective_security_context,has_container_security_context
 
@@ -131,6 +158,7 @@ def scan_pod_level_risks(
         resource:str,
         namespace:str,
         source_file:str,
+        pod_spec_path: str,
 ) -> list[Risk]:
     risks: list[Risk] = []
 
@@ -141,7 +169,7 @@ def scan_pod_level_risks(
             resource = resource,
             namespace = namespace,
             source_file = source_file,
-            path = "spec.hostwork",
+            path = f"{pod_spec_path}.hostNetwork",
             message = "Pod 启用了hostNetwork",
             reason = "hostNetwork 会让pod共享宿主机网络命名空间，削弱网络隔离边界",
             suggestion = "删除hostNetwork: true,除非该工作负载确实需要宿主机网络",
@@ -155,7 +183,7 @@ def scan_pod_level_risks(
             resource = resource,
             namespace = namespace,
             source_file = source_file,
-            path = "spec.hostPID",
+            path = f"{pod_spec_path}.hostPID",
             message = "Pod 启用了 hostPID",
             reason = "hostPID 会让 Pod 共享宿主机进程命名空间，可能暴露宿主机进程信息。",
             suggestion = "删除hostPID: true,避免业务容器访问宿主机进程空间",
@@ -169,7 +197,7 @@ def scan_pod_level_risks(
             resource = resource,
             namespace = namespace,
             source_file = source_file,
-            path = "spec.hostIPC",
+            path = f"{pod_spec_path}.hostIPC",
             message = "Pod 启用了 hostIPC",
             reason = "hostIPC会让 pod 共享宿主机IPC命名空间，削弱进程间通信隔离",
             suggestion = "删除 hostIPC: true,除非有明确的系统级组件需求",
@@ -179,11 +207,11 @@ def scan_pod_level_risks(
     if pod_spec.get("automountServiceAccountToken") is True:
         risks.append(make_risk(
             level = "MEDIUM",
-            rule_id = "KG-SA-001",
+            rule_id = "KGL-SA-001",
             resource = resource,
             namespace = namespace,
             source_file = source_file,
-            path = "spec.automountServiceAccountToken",
+            path = f"{pod_spec_path}.automountServiceAccountToken",
             message = "Pod 显式开启了 automountServiceAccountToken",
             reason = "容器被攻击后，攻击者可能读取ServiceAccount token 并访问 kubernetes API。",
             suggestion = "如果业务不需要访问 kubernetes API,设置 automountServiceAccountToken: false。",
@@ -196,7 +224,7 @@ def scan_pod_level_risks(
             resource = resource,
             namespace = namespace,
             source_file = source_file,
-            path = "spec.automountServiceAccountToken",
+            path = f"{pod_spec_path}.automountServiceAccountToken",
             message = "Pod未显式关闭 automountServiceAccountToken",
             reason = "未显式关闭时，Pod可能自动挂载 ServiceAccount token",
             suggestion = "如果业务不需要访问 kubernetes API,建议显式设置 automountServiceAccountToken: false。",
@@ -212,6 +240,7 @@ def scan_volume_risks(
     resource: str,
     namespace: str,
     source_file: str,
+    pod_spec_path: str,
 ) -> list[Risk]:
     risks:list[Risk] = []
 
@@ -223,7 +252,7 @@ def scan_volume_risks(
         if not isinstance(volume,dict):
             continue
 
-        host_path = volume.get("hostpath")
+        host_path = volume.get("hostPath")
 
         if not isinstance(host_path,dict):
             continue
@@ -238,7 +267,7 @@ def scan_volume_risks(
             resource = resource,
             namespace = namespace,
             source_file = source_file,
-            path = f"spec.volumes[{index}].hostPath.path",
+            path = f"{pod_spec_path}.volumes[{index}].hostPath.path",
             message = f"Pod 使用了 hostPath 挂载：{path_value}",
             reason = "hostPath 会把宿主机路径暴露给容器，可能导致宿主机文件泄露、篡改或攻击面扩大。",
             suggestion = "避免业务容器使用 hostpath,优先使用 PVC、configMap、Secret等更受控的挂载方式。",
@@ -254,6 +283,7 @@ def scan_container_risks(
     resource: str,
     namespace: str,
     source_file: str,
+    pod_spec_path: str,
 ) -> list[Risk]:
     risks:list[Risk] = []
     
@@ -267,7 +297,7 @@ def scan_container_risks(
             continue
 
         container_name = str(container.get("name",f"container-{index}"))
-        container_path = f"spec.containers[{index}]"
+        container_path = f"{pod_spec_path}.containers[{index}]"
 
         image = str(container.get("image",""))
 
@@ -290,6 +320,24 @@ def scan_container_risks(
             pod_spec,
             container,
         )
+
+        pod_security_context = pod_spec.get("securityContext") or {}
+        container_security_context = container.get("securityContext")
+
+        def security_context_path(field_name: str) -> str:
+            """定位字段实际配置处；缺失字段沿用容器级建议路径。"""
+            if (
+                isinstance(container_security_context, dict)
+                and field_name in container_security_context
+            ):
+                return f"{container_path}.securityContext.{field_name}"
+            if (
+                field_name in POD_INHERITABLE_SECURITY_CONTEXT_FIELDS
+                and isinstance(pod_security_context, dict)
+                and field_name in pod_security_context
+            ):
+                return f"{pod_spec_path}.securityContext.{field_name}"
+            return f"{container_path}.securityContext.{field_name}"
 
         if not has_container_security_context:
             risks.append(make_risk(
@@ -314,7 +362,7 @@ def scan_container_risks(
                 namespace=namespace,
                 source_file=source_file,
                 container=container_name,
-                path=f"{container_path}.securityContext.privileged",
+                path=security_context_path("privileged"),
                 message=f"容器 {container_name} 启用了 privileged",
                 reason="特权容器会显著削弱容器与宿主机之间的隔离边界。",
                 suggestion="删除 privileged: true，除非该容器确实是受信任的系统级组件。",
@@ -329,7 +377,7 @@ def scan_container_risks(
                 namespace=namespace,
                 source_file=source_file,
                 container=container_name,
-                path=f"{container_path}.securityContext.allowPrivilegeEscalation",
+                path=security_context_path("allowPrivilegeEscalation"),
                 message=f"容器 {container_name} 允许权限提升",
                 reason="allowPrivilegeEscalation: true 可能让容器内进程获得额外权限。",
                 suggestion="设置 allowPrivilegeEscalation: false。",
@@ -344,7 +392,7 @@ def scan_container_risks(
                 namespace=namespace,
                 source_file=source_file,
                 container=container_name,
-                path=f"{container_path}.securityContext.runAsUser",
+                path=security_context_path("runAsUser"),
                 message=f"容器 {container_name} 显式以 root 用户运行",
                 reason="runAsUser: 0 表示容器进程以 root 身份运行，可能扩大攻击影响。",
                 suggestion="设置 runAsUser 为非 0 用户，例如 1000，并配合 runAsNonRoot: true。",
@@ -359,7 +407,7 @@ def scan_container_risks(
                 namespace=namespace,
                 source_file=source_file,
                 container=container_name,
-                path=f"{container_path}.securityContext.runAsNonRoot",
+                path=security_context_path("runAsNonRoot"),
                 message=f"容器 {container_name} 未要求以非 root 用户运行",
                 reason="runAsNonRoot: false 可能允许容器以 root 身份运行。",
                 suggestion="设置 runAsNonRoot: true。",
@@ -374,7 +422,7 @@ def scan_container_risks(
                 namespace=namespace,
                 source_file=source_file,
                 container=container_name,
-                path=f"{container_path}.securityContext.seccompProfile",
+                path=security_context_path("seccompProfile"),
                 message=f"容器 {container_name} 未配置 seccompProfile",
                 reason="seccomp 可以限制容器进程可使用的系统调用，减少内核攻击面。",
                 suggestion="设置 seccompProfile.type: RuntimeDefault。",
@@ -389,7 +437,7 @@ def scan_container_risks(
                 namespace=namespace,
                 source_file=source_file,
                 container=container_name,
-                path=f"{container_path}.securityContext.readOnlyRootFilesystem",
+                path=security_context_path("readOnlyRootFilesystem"),
                 message=f"容器 {container_name} 未开启只读根文件系统",
                 reason="只读根文件系统可以降低攻击者在容器内写入恶意文件的风险。",
                 suggestion="在确认业务不依赖写入根文件系统后，设置 readOnlyRootFilesystem: true。",
@@ -429,6 +477,7 @@ def scan_workload(resource: YamlResource) -> list[Risk]:
     if pod_spec is None:
         return []
     resource_ref,namespace,source_file,_kind = get_resource_ref(resource)
+    pod_spec_path = get_pod_spec_path(resource)
 
     risks: list[Risk] = []
     #传入四个信息确认身份，然后对该k8s资源进行pod层面的检查，风险加入到risks列表中，后面同理
@@ -438,12 +487,14 @@ def scan_workload(resource: YamlResource) -> list[Risk]:
         resource = resource_ref,
         namespace = namespace,
         source_file = source_file,
+        pod_spec_path = pod_spec_path,
     ))
     risks.extend(scan_volume_risks(
         pod_spec,
         resource = resource_ref,
         namespace = namespace,
         source_file = source_file, 
+        pod_spec_path = pod_spec_path,
     ))
 
     risks.extend(scan_container_risks(
@@ -451,6 +502,7 @@ def scan_workload(resource: YamlResource) -> list[Risk]:
         resource = resource_ref,
         namespace = namespace,
         source_file = source_file,
+        pod_spec_path = pod_spec_path,
     ))
 
     return risks

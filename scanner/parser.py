@@ -70,10 +70,27 @@ def load_yaml_file(file_path: str | Path) -> list[YamlResource]:
                 if document is None:
                     continue
 
-                # Kubernetes 资源通常应当是 dict
-                # 如果 YAML 顶层是 list / str / int，当前工具先跳过
                 if not isinstance(document, dict):
-                    continue
+                    raise ValueError(
+                        f"无法识别 YAML 文档：{path} 第 {document_index} 个文档顶层必须是 Kubernetes 资源对象"
+                    )
+
+                api_version = document.get("apiVersion")
+                kind = document.get("kind")
+                if not isinstance(api_version, str) or not api_version.strip():
+                    raise ValueError(
+                        f"无法识别 Kubernetes 资源：{path} 第 {document_index} 个文档缺少有效 apiVersion"
+                    )
+                if not isinstance(kind, str) or not kind.strip():
+                    raise ValueError(
+                        f"无法识别 Kubernetes 资源：{path} 第 {document_index} 个文档缺少有效 kind"
+                    )
+
+                metadata = document.get("metadata")
+                if metadata is not None and not isinstance(metadata, dict):
+                    raise ValueError(
+                        f"无法识别 Kubernetes 资源：{path} 第 {document_index} 个文档的 metadata 必须是对象"
+                    )
 
                 # 给资源附加来源信息，方便后续报告和自动修复定位
                 document["_source_file"] = str(path)

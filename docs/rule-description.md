@@ -24,7 +24,7 @@
 | KGL-SEC-005 | 容器缺失 seccompProfile                | Workload |      2 |
 | KGL-SEC-006 | 容器未启用 readOnlyRootFilesystem       | Workload |      2 |
 | KGL-RES-001 | 容器缺失 resources.limits              | Workload |      6 |
-| KGL-VOL-001 | 挂载敏感 hostPath 路径                   | Workload |     11 |
+| KGL-VOL-001 | 使用 hostPath（敏感路径 HIGH，其他路径 MEDIUM） | Workload |     11 |
 
 ---
 
