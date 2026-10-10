@@ -26,7 +26,29 @@ CONTAINER_SECURITY_CONTEXT_FIELDS = frozenset({
     "privileged",
     "allowPrivilegeEscalation",
     "readOnlyRootFilesystem",
+    "capabilities",
 })
+
+# 仅挑选明确扩大系统、进程或网络攻击面的能力；一般性 add 不会命中。
+# SYS_ADMIN / SYS_MODULE / SYS_RAWIO / SYS_PTRACE 影响面较广，列为 HIGH。
+# NET_ADMIN / NET_RAW / DAC_OVERRIDE / DAC_READ_SEARCH 的风险通常受 namespace
+# 和挂载范围限制，列为 MEDIUM。该列表是启发式高风险集合，不等同于 PSS 全量校验。
+DANGEROUS_CAPABILITIES = {
+    "SYS_ADMIN": ("HIGH", "允许广泛系统管理操作，可能削弱 namespace 隔离并访问高权限内核接口。"),
+    "SYS_MODULE": ("HIGH", "允许加载或卸载内核模块，可能影响节点内核及其上运行的工作负载。"),
+    "SYS_RAWIO": ("HIGH", "允许低层 I/O 操作，可能访问硬件或绕过常规设备访问边界。"),
+    "SYS_PTRACE": ("HIGH", "允许检查或操纵其他进程，可能读取进程内存中的凭据或篡改进程行为。"),
+    "NET_ADMIN": ("MEDIUM", "允许修改适用网络 namespace 中的接口、路由或过滤配置。"),
+    "NET_RAW": ("MEDIUM", "允许构造或发送原始网络报文，扩大探测、伪造报文等网络攻击面。"),
+    "DAC_OVERRIDE": ("MEDIUM", "允许绕过常规文件读写权限检查，影响容器可访问的文件系统范围。"),
+    "DAC_READ_SEARCH": ("MEDIUM", "允许绕过常规文件读取或目录搜索权限检查，影响容器可访问的文件系统范围。"),
+}
+
+
+def normalize_capability(value: Any) -> str:
+    """规范化 Linux capability 名称，兼容可选的 CAP_ 前缀。"""
+    name = str(value).strip().upper()
+    return name[4:] if name.startswith("CAP_") else name
 
 """统一生成风险记录"""
 def make_risk(
@@ -141,7 +163,7 @@ def get_effective_security_context(pod_spec:dict[str,Any], container:dict[str,An
     # 只有 Kubernetes PodSecurityContext 中可继承到容器的字段才使用 Pod 默认值。
     if isinstance(pod_security_context,dict):
         for field_name in POD_INHERITABLE_SECURITY_CONTEXT_FIELDS:
-            if field_name in pod_security_context:
+            if field_name in pod_security_context and pod_security_context[field_name] is not None:
                 effective_security_context[field_name] = pod_security_context[field_name]
 
     # 仅采纳本扫描器实际识别的容器字段；Pod 级非法字段不会成为容器配置。
@@ -150,7 +172,7 @@ def get_effective_security_context(pod_spec:dict[str,Any], container:dict[str,An
             POD_INHERITABLE_SECURITY_CONTEXT_FIELDS
             | CONTAINER_SECURITY_CONTEXT_FIELDS
         ):
-            if field_name in container_security_context:
+            if field_name in container_security_context and container_security_context[field_name] is not None:
                 effective_security_context[field_name] = container_security_context[field_name]
     
     return effective_security_context,has_container_security_context
@@ -338,12 +360,14 @@ def scan_container_risks(
                 if (
                     isinstance(container_security_context, dict)
                     and field_name in container_security_context
+                    and container_security_context[field_name] is not None
                 ):
                     return f"{container_path}.securityContext.{field_name}"
                 if (
                     field_name in POD_INHERITABLE_SECURITY_CONTEXT_FIELDS
                     and isinstance(pod_security_context, dict)
                     and field_name in pod_security_context
+                    and pod_security_context[field_name] is not None
                 ):
                     return f"{pod_spec_path}.securityContext.{field_name}"
                 return f"{container_path}.securityContext.{field_name}"
@@ -378,7 +402,9 @@ def scan_container_risks(
                     auto_fixable=True,
                 ))
 
-            if security_context.get("allowPrivilegeEscalation") is True:
+            allow_privilege_escalation = security_context.get("allowPrivilegeEscalation")
+            if allow_privilege_escalation is True or allow_privilege_escalation is None:
+                missing_allow_privilege_escalation = allow_privilege_escalation is None
                 risks.append(make_risk(
                     level="MEDIUM",
                     rule_id="KGL-SEC-002",
@@ -387,8 +413,16 @@ def scan_container_risks(
                     source_file=source_file,
                     container=container_name,
                     path=security_context_path("allowPrivilegeEscalation"),
-                    message=f"容器 {container_name} 允许权限提升",
-                    reason="allowPrivilegeEscalation: true 可能让容器内进程获得额外权限。",
+                    message=(
+                        f"容器 {container_name} 未显式禁止权限提升"
+                        if missing_allow_privilege_escalation
+                        else f"容器 {container_name} 允许权限提升"
+                    ),
+                    reason=(
+                        "字段缺失时不会强制设置 no_new_privs，Kubernetes 通常允许权限提升；privileged 或 SYS_ADMIN 场景始终允许。此项表示配置缺口，不证明进程已经提升权限。"
+                        if missing_allow_privilege_escalation
+                        else "allowPrivilegeEscalation: true 允许进程尝试获得高于父进程的权限。"
+                    ),
                     suggestion="设置 allowPrivilegeEscalation: false。",
                     auto_fixable=True,
                 ))
@@ -418,12 +452,33 @@ def scan_container_risks(
                     container=container_name,
                     path=security_context_path("runAsNonRoot"),
                     message=f"容器 {container_name} 未要求以非 root 用户运行",
-                    reason="runAsNonRoot: false 可能允许容器以 root 身份运行。",
+                    reason="runAsNonRoot: false 明确未要求使用非 root 身份，但不能据此断定容器当前进程实际以 root 运行。",
                     suggestion="设置 runAsNonRoot: true。",
                     auto_fixable=True,
                 ))
+            elif "runAsNonRoot" not in security_context:
+                risks.append(make_risk(
+                    level="LOW",
+                    rule_id="KGL-SEC-004",
+                    resource=resource,
+                    namespace=namespace,
+                    source_file=source_file,
+                    container=container_name,
+                    path=security_context_path("runAsNonRoot"),
+                    message=f"容器 {container_name} 未显式强制以非 root 用户运行",
+                    reason="未设置 runAsNonRoot 不代表当前进程必然以 root 运行，但 Kubernetes 不会据此拒绝 root 用户。",
+                    suggestion="确认镜像运行用户后，按业务兼容性设置 runAsNonRoot: true。",
+                    auto_fixable=True,
+                ))
 
-            if "seccompProfile" not in security_context:
+            seccomp_profile = security_context.get("seccompProfile")
+            seccomp_type = (
+                seccomp_profile.get("type")
+                if isinstance(seccomp_profile, dict)
+                else None
+            )
+
+            if seccomp_type is None:
                 risks.append(make_risk(
                     level="LOW",
                     rule_id="KGL-SEC-005",
@@ -433,9 +488,74 @@ def scan_container_risks(
                     container=container_name,
                     path=security_context_path("seccompProfile"),
                     message=f"容器 {container_name} 未配置 seccompProfile",
-                    reason="seccomp 可以限制容器进程可使用的系统调用，减少内核攻击面。",
+                    reason="这里只检查清单是否显式声明 profile；字段缺失不证明运行时未应用 seccomp，节点或运行时可能提供默认策略。",
                     suggestion="设置 seccompProfile.type: RuntimeDefault。",
                     auto_fixable=True,
+                ))
+            elif seccomp_type == "Unconfined":
+                risks.append(make_risk(
+                    level="MEDIUM",
+                    rule_id="KGL-SEC-009",
+                    resource=resource,
+                    namespace=namespace,
+                    source_file=source_file,
+                    container=container_name,
+                    path=security_context_path("seccompProfile"),
+                    message=f"容器 {container_name} 显式使用 seccomp Unconfined",
+                    reason="Unconfined 不应用 seccomp 系统调用过滤；这是攻击面配置风险，不代表已发生利用。",
+                    suggestion="评估应用兼容性后使用 RuntimeDefault，或使用节点上存在且受控的 Localhost profile。",
+                    auto_fixable=False,
+                ))
+
+            container_capabilities = (
+                container_security_context.get("capabilities")
+                if isinstance(container_security_context, dict)
+                else None
+            )
+            if not isinstance(container_capabilities, dict):
+                container_capabilities = {}
+
+            added_capabilities = container_capabilities.get("add") or []
+            if isinstance(added_capabilities, list):
+                for capability_index, capability_value in enumerate(added_capabilities):
+                    capability_name = normalize_capability(capability_value)
+                    capability_risk = DANGEROUS_CAPABILITIES.get(capability_name)
+                    if capability_risk is None:
+                        continue
+
+                    capability_level, capability_reason = capability_risk
+                    risks.append(make_risk(
+                        level=capability_level,
+                        rule_id="KGL-SEC-007",
+                        resource=resource,
+                        namespace=namespace,
+                        source_file=source_file,
+                        container=container_name,
+                        path=f"{container_path}.securityContext.capabilities.add[{capability_index}]",
+                        message=f"容器 {container_name} 显式添加高风险 Linux capability {capability_name}",
+                        reason=capability_reason,
+                        suggestion="移除不必要的 capability；如确有需求，仅授予完成任务所需的最小能力。",
+                        auto_fixable=False,
+                    ))
+
+            dropped_capabilities = container_capabilities.get("drop") or []
+            drops_all = (
+                isinstance(dropped_capabilities, list)
+                and any(value == "ALL" for value in dropped_capabilities)
+            )
+            if not drops_all:
+                risks.append(make_risk(
+                    level="LOW",
+                    rule_id="KGL-SEC-008",
+                    resource=resource,
+                    namespace=namespace,
+                    source_file=source_file,
+                    container=container_name,
+                    path=f"{container_path}.securityContext.capabilities.drop",
+                    message=f"容器 {container_name} 未显式 drop ALL capabilities",
+                    reason="这是减少默认 capability 集合的加固缺口，不表示容器已经拥有某个新增危险 capability。",
+                    suggestion="根据 Kubernetes Restricted 策略要求评估 drop: [ALL]，再按最小权限添加确有需要的能力。",
+                    auto_fixable=False,
                 ))
 
             if security_context.get("readOnlyRootFilesystem") is not True:

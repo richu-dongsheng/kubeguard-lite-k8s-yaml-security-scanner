@@ -150,6 +150,7 @@ spec:
             "KGL-SEC-004": "MEDIUM",
             "KGL-SEC-005": "LOW",
             "KGL-SEC-006": "LOW",
+            "KGL-SEC-008": "LOW",
             "KGL-RES-001": "MEDIUM",
         }
 
@@ -165,6 +166,12 @@ spec:
 
                 for rule_id, expected_level in expected_levels.items():
                     self.assertIn(rule_id, by_rule)
+                    if rule_id == "KGL-SEC-004":
+                        self.assertEqual(
+                            {risk["level"] for risk in by_rule[rule_id]},
+                            {"MEDIUM", "LOW"},
+                        )
+                        continue
                     self.assertTrue(
                         all(risk["level"] == expected_level for risk in by_rule[rule_id]),
                         f"{rule_id} 的风险等级应为 {expected_level}",
@@ -197,6 +204,7 @@ spec:
                     "KGL-SEC-004": f"{pod_prefix}.containers[1].securityContext.runAsNonRoot",
                     "KGL-SEC-005": f"{pod_prefix}.containers[1].securityContext.seccompProfile",
                     "KGL-SEC-006": f"{pod_prefix}.containers[1].securityContext.readOnlyRootFilesystem",
+                    "KGL-SEC-008": f"{pod_prefix}.containers[1].securityContext.capabilities.drop",
                     "KGL-RES-001": f"{pod_prefix}.containers[1].resources.limits",
                 }
                 for rule_id, expected_path in expected_container_paths.items():
@@ -459,10 +467,21 @@ spec:
                     inherited_by_rule["KGL-SEC-006"]["path"],
                     expected_inherited_container_paths[resource],
                 )
+                inherited_privilege_escalation = next(
+                    risk for risk in inherited_risks
+                    if risk["rule_id"] == "KGL-SEC-002"
+                )
+                self.assertEqual(inherited_privilege_escalation["level"], "MEDIUM")
+                self.assertEqual(
+                    inherited_privilege_escalation["path"],
+                    "spec.containers[0].securityContext.allowPrivilegeEscalation"
+                    if resource.startswith("Pod/")
+                    else "spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation",
+                )
+                self.assertIn("未显式禁止", inherited_privilege_escalation["message"])
                 self.assertFalse(
                     any(
-                        risk["rule_id"]
-                        in {"KGL-SEC-001", "KGL-SEC-002", "KGL-SEC-004", "KGL-SEC-005"}
+                        risk["rule_id"] in {"KGL-SEC-001", "KGL-SEC-004", "KGL-SEC-005"}
                         for risk in inherited_risks
                     )
                 )
@@ -647,7 +666,8 @@ spec:
         )
         self.assertNotIn("KGL-SEC-004", inherited_by_rule)
         self.assertNotIn("KGL-SEC-005", inherited_by_rule)
-        self.assertFalse(any(risk["rule_id"] in {"KGL-SEC-001", "KGL-SEC-002"} for risk in inherited_risks))
+        self.assertEqual(inherited_by_rule["KGL-SEC-002"]["level"], "MEDIUM")
+        self.assertIn("未显式禁止", inherited_by_rule["KGL-SEC-002"]["message"])
 
         overridden_risks = [
             risk for risk in risks if risk["container"] == "init-overridden"
@@ -970,6 +990,8 @@ spec:
             seccompProfile:
               type: RuntimeDefault
             readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
           resources:
             limits:
               cpu: "1"
@@ -1113,6 +1135,8 @@ spec:
         seccompProfile:
           type: RuntimeDefault
         readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
       resources:
         limits:
           cpu: "1"
@@ -1140,6 +1164,8 @@ spec:
             seccompProfile:
               type: RuntimeDefault
             readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
           resources:
             limits:
               cpu: "1"
@@ -1205,6 +1231,657 @@ spec:
 
         with self.assertRaises(ValueError):
             scan_resources([])
+
+    def test_capability_rules_classify_danger_and_drop_all_separately(self) -> None:
+        """危险 add 按能力分级，普通能力不报；drop ALL 是独立 LOW 加固项。"""
+        result = self.scan_yaml(
+            """apiVersion: v1
+kind: Pod
+metadata:
+  name: capabilities-pod
+spec:
+  containers:
+    - name: ordinary-capability
+      image: nginx:1.27
+      securityContext:
+        capabilities:
+          add: [NET_BIND_SERVICE]
+          drop: [ALL]
+    - name: dangerous-capabilities
+      image: nginx:1.27
+      securityContext:
+        capabilities:
+          add: [CAP_SYS_ADMIN, NET_ADMIN]
+          drop: [NET_RAW]
+    - name: noncanonical-drop-all
+      image: nginx:1.27
+      securityContext:
+        capabilities:
+          drop: [all]
+  initContainers:
+    - name: init-dangerous-capability
+      image: busybox:1.36
+      securityContext:
+        capabilities:
+          add: [SYS_PTRACE]
+          drop: [NET_BIND_SERVICE]
+    - name: init-ordinary-capability
+      image: busybox:1.36
+      securityContext:
+        capabilities:
+          add: [NET_BIND_SERVICE]
+          drop: [ALL]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: capabilities-deployment
+spec:
+  template:
+    spec:
+      containers:
+        - name: deployment-dangerous-capability
+          image: nginx:1.27
+          securityContext:
+            capabilities:
+              add: [SYS_MODULE]
+              drop: [ALL]
+      initContainers:
+        - name: deployment-init-dangerous-capability
+          image: busybox:1.36
+          securityContext:
+            capabilities:
+              add: [DAC_OVERRIDE]
+              drop: [MKNOD]
+"""
+        )
+
+        def rule_findings(resource: str, rule_id: str, container: str) -> list[dict[str, object]]:
+            return [
+                risk for risk in self.risks_for_resource(result, resource)
+                if risk["rule_id"] == rule_id and risk["container"] == container
+            ]
+
+        pod_danger = rule_findings(
+            "Pod/capabilities-pod", "KGL-SEC-007", "dangerous-capabilities"
+        )
+        self.assertEqual(
+            [(risk["level"], risk["path"]) for risk in pod_danger],
+            [
+                (
+                    "HIGH",
+                    "spec.containers[1].securityContext.capabilities.add[0]",
+                ),
+                (
+                    "MEDIUM",
+                    "spec.containers[1].securityContext.capabilities.add[1]",
+                ),
+            ],
+        )
+        self.assertFalse(any(risk["auto_fixable"] for risk in pod_danger))
+        self.assertEqual(
+            rule_findings("Pod/capabilities-pod", "KGL-SEC-007", "ordinary-capability"),
+            [],
+        )
+        self.assertEqual(
+            rule_findings("Pod/capabilities-pod", "KGL-SEC-008", "ordinary-capability"),
+            [],
+        )
+        noncanonical_drop = rule_findings(
+            "Pod/capabilities-pod", "KGL-SEC-008", "noncanonical-drop-all"
+        )[0]
+        self.assertEqual(noncanonical_drop["level"], "LOW")
+        self.assertEqual(
+            noncanonical_drop["path"],
+            "spec.containers[2].securityContext.capabilities.drop",
+        )
+        self.assertFalse(noncanonical_drop["auto_fixable"])
+
+        pod_drop_finding = rule_findings(
+            "Pod/capabilities-pod", "KGL-SEC-008", "dangerous-capabilities"
+        )[0]
+        self.assertEqual(pod_drop_finding["level"], "LOW")
+        self.assertEqual(
+            pod_drop_finding["path"],
+            "spec.containers[1].securityContext.capabilities.drop",
+        )
+        self.assertFalse(pod_drop_finding["auto_fixable"])
+
+        init_danger = rule_findings(
+            "Pod/capabilities-pod", "KGL-SEC-007", "init-dangerous-capability"
+        )[0]
+        self.assertEqual(init_danger["level"], "HIGH")
+        self.assertEqual(
+            init_danger["path"],
+            "spec.initContainers[0].securityContext.capabilities.add[0]",
+        )
+        self.assertEqual(init_danger["container_type"], "initContainer")
+        self.assertFalse(init_danger["auto_fixable"])
+        init_drop_finding = rule_findings(
+            "Pod/capabilities-pod", "KGL-SEC-008", "init-dangerous-capability"
+        )[0]
+        self.assertEqual(init_drop_finding["level"], "LOW")
+        self.assertEqual(
+            init_drop_finding["path"],
+            "spec.initContainers[0].securityContext.capabilities.drop",
+        )
+        self.assertEqual(init_drop_finding["container_type"], "initContainer")
+        self.assertEqual(
+            rule_findings(
+                "Pod/capabilities-pod", "KGL-SEC-007", "init-ordinary-capability"
+            ),
+            [],
+        )
+        self.assertEqual(
+            rule_findings(
+                "Pod/capabilities-pod", "KGL-SEC-008", "init-ordinary-capability"
+            ),
+            [],
+        )
+
+        deployment_regular = rule_findings(
+            "Deployment/capabilities-deployment",
+            "KGL-SEC-007",
+            "deployment-dangerous-capability",
+        )[0]
+        self.assertEqual(deployment_regular["level"], "HIGH")
+        self.assertEqual(
+            deployment_regular["path"],
+            "spec.template.spec.containers[0].securityContext.capabilities.add[0]",
+        )
+        deployment_init = rule_findings(
+            "Deployment/capabilities-deployment",
+            "KGL-SEC-007",
+            "deployment-init-dangerous-capability",
+        )[0]
+        self.assertEqual(deployment_init["level"], "MEDIUM")
+        self.assertEqual(
+            deployment_init["path"],
+            "spec.template.spec.initContainers[0].securityContext.capabilities.add[0]",
+        )
+        self.assertEqual(deployment_init["container_type"], "initContainer")
+        deployment_init_drop = rule_findings(
+            "Deployment/capabilities-deployment",
+            "KGL-SEC-008",
+            "deployment-init-dangerous-capability",
+        )[0]
+        self.assertEqual(deployment_init_drop["level"], "LOW")
+        self.assertEqual(
+            deployment_init_drop["path"],
+            "spec.template.spec.initContainers[0].securityContext.capabilities.drop",
+        )
+        for finding in (deployment_regular, deployment_init, deployment_init_drop):
+            self.assertFalse(finding["auto_fixable"])
+
+    def test_drop_all_satisfies_sec008_even_with_other_dropped_capabilities(self) -> None:
+        """drop 列表含 ALL 即满足要求；只有其他能力、缺失或空列表才报告。"""
+        result = self.scan_yaml(
+            """apiVersion: v1
+kind: Pod
+metadata:
+  name: drop-all-semantics
+spec:
+  containers:
+    - name: all-only
+      image: nginx:1.27
+      securityContext:
+        capabilities:
+          drop: [ALL]
+    - name: all-and-net-raw
+      image: nginx:1.27
+      securityContext:
+        capabilities:
+          drop: [ALL, NET_RAW]
+    - name: net-raw-only
+      image: nginx:1.27
+      securityContext:
+        capabilities:
+          drop: [NET_RAW]
+    - name: drop-missing
+      image: nginx:1.27
+      securityContext:
+        capabilities:
+          add: [NET_BIND_SERVICE]
+    - name: drop-empty
+      image: nginx:1.27
+      securityContext:
+        capabilities:
+          drop: []
+"""
+        )
+        risks = self.risks_for_resource(result, "Pod/drop-all-semantics")
+        sec008_by_container = {
+            risk["container"]: risk
+            for risk in risks
+            if risk["rule_id"] == "KGL-SEC-008"
+        }
+
+        self.assertNotIn("all-only", sec008_by_container)
+        self.assertNotIn("all-and-net-raw", sec008_by_container)
+        for index, container in enumerate(("net-raw-only", "drop-missing", "drop-empty"), start=2):
+            with self.subTest(container=container):
+                finding = sec008_by_container[container]
+                self.assertEqual(finding["level"], "LOW")
+                self.assertEqual(
+                    finding["path"],
+                    f"spec.containers[{index}].securityContext.capabilities.drop",
+                )
+
+    def test_seccomp_profiles_distinguish_missing_unconfined_and_confined(self) -> None:
+        """只把 Unconfined 判为配置风险，区分缺失并遵守 Pod 默认与容器覆盖。"""
+        result = self.scan_yaml(
+            """apiVersion: v1
+kind: Pod
+metadata:
+  name: seccomp-unconfined-pod
+spec:
+  securityContext:
+    seccompProfile:
+      type: Unconfined
+  containers:
+    - name: inherits-unconfined
+      image: nginx:1.27
+    - name: overrides-runtime-default
+      image: nginx:1.27
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+    - name: explicitly-unconfined
+      image: nginx:1.27
+      securityContext:
+        seccompProfile:
+          type: Unconfined
+  initContainers:
+    - name: overrides-localhost
+      image: busybox:1.36
+      securityContext:
+        seccompProfile:
+          type: Localhost
+          localhostProfile: profiles/custom.json
+    - name: init-explicitly-unconfined
+      image: busybox:1.36
+      securityContext:
+        seccompProfile:
+          type: Unconfined
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: seccomp-missing-pod
+spec:
+  containers:
+    - name: missing-profile
+      image: nginx:1.27
+      securityContext: {}
+  initContainers:
+    - name: init-missing-profile
+      image: busybox:1.36
+      securityContext: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: seccomp-deployment
+spec:
+  template:
+    spec:
+      securityContext:
+        seccompProfile:
+          type: Localhost
+          localhostProfile: profiles/deployment.json
+      containers:
+        - name: inherits-localhost
+          image: nginx:1.27
+      initContainers:
+        - name: init-unconfined
+          image: busybox:1.36
+          securityContext:
+            seccompProfile:
+              type: Unconfined
+"""
+        )
+
+        def rule_finding(resource: str, rule_id: str, container: str) -> dict[str, object]:
+            return next(
+                risk for risk in self.risks_for_resource(result, resource)
+                if risk["rule_id"] == rule_id and risk["container"] == container
+            )
+
+        inherited_unconfined = rule_finding(
+            "Pod/seccomp-unconfined-pod", "KGL-SEC-009", "inherits-unconfined"
+        )
+        self.assertEqual(inherited_unconfined["level"], "MEDIUM")
+        self.assertEqual(
+            inherited_unconfined["path"],
+            "spec.securityContext.seccompProfile",
+        )
+        explicit_unconfined = rule_finding(
+            "Pod/seccomp-unconfined-pod", "KGL-SEC-009", "explicitly-unconfined"
+        )
+        self.assertEqual(explicit_unconfined["level"], "MEDIUM")
+        self.assertEqual(
+            explicit_unconfined["path"],
+            "spec.containers[2].securityContext.seccompProfile",
+        )
+        init_unconfined = rule_finding(
+            "Pod/seccomp-unconfined-pod", "KGL-SEC-009", "init-explicitly-unconfined"
+        )
+        self.assertEqual(
+            init_unconfined["path"],
+            "spec.initContainers[1].securityContext.seccompProfile",
+        )
+        self.assertEqual(init_unconfined["container_type"], "initContainer")
+        self.assertFalse(init_unconfined["auto_fixable"])
+
+        unconfined_pod_risks = self.risks_for_resource(
+            result, "Pod/seccomp-unconfined-pod"
+        )
+        self.assertFalse(
+            any(
+                risk["rule_id"] in {"KGL-SEC-005", "KGL-SEC-009"}
+                and risk["container"] in {"overrides-runtime-default", "overrides-localhost"}
+                for risk in unconfined_pod_risks
+            )
+        )
+        self.assertFalse(
+            any(
+                risk["rule_id"] == "KGL-SEC-005"
+                for risk in unconfined_pod_risks
+            )
+        )
+
+        missing_regular = rule_finding(
+            "Pod/seccomp-missing-pod", "KGL-SEC-005", "missing-profile"
+        )
+        self.assertEqual(missing_regular["level"], "LOW")
+        self.assertEqual(
+            missing_regular["path"],
+            "spec.containers[0].securityContext.seccompProfile",
+        )
+        missing_init = rule_finding(
+            "Pod/seccomp-missing-pod", "KGL-SEC-005", "init-missing-profile"
+        )
+        self.assertEqual(missing_init["level"], "LOW")
+        self.assertEqual(
+            missing_init["path"],
+            "spec.initContainers[0].securityContext.seccompProfile",
+        )
+        self.assertEqual(missing_init["container_type"], "initContainer")
+        self.assertFalse(
+            any(
+                risk["rule_id"] == "KGL-SEC-009"
+                for risk in self.risks_for_resource(result, "Pod/seccomp-missing-pod")
+            )
+        )
+
+        deployment_init = rule_finding(
+            "Deployment/seccomp-deployment", "KGL-SEC-009", "init-unconfined"
+        )
+        self.assertEqual(deployment_init["level"], "MEDIUM")
+        self.assertEqual(
+            deployment_init["path"],
+            "spec.template.spec.initContainers[0].securityContext.seccompProfile",
+        )
+        self.assertEqual(deployment_init["container_type"], "initContainer")
+        deployment_localhost = next(
+            resource for resource in result["resources"]
+            if resource.get("kind") == "Deployment"
+        )
+        effective_localhost, _ = get_effective_security_context(
+            deployment_localhost["spec"]["template"]["spec"],
+            deployment_localhost["spec"]["template"]["spec"]["containers"][0],
+        )
+        self.assertEqual(effective_localhost["seccompProfile"]["type"], "Localhost")
+        self.assertFalse(
+            any(
+                risk["rule_id"] in {"KGL-SEC-005", "KGL-SEC-009"}
+                for risk in self.risks_for_resource(result, "Deployment/seccomp-deployment")
+                if risk["container"] == "inherits-localhost"
+            )
+        )
+
+    def test_privilege_and_nonroot_explicit_and_missing_semantics(self) -> None:
+        """APE true/false/缺失与 runAsNonRoot 状态分开报告，缺失不冒充 root。"""
+        result = self.scan_yaml(
+            """apiVersion: v1
+kind: Pod
+metadata:
+  name: security-defaults-pod
+spec:
+  containers:
+    - name: explicitly-risky
+      image: nginx:1.27
+      securityContext:
+        allowPrivilegeEscalation: true
+        runAsUser: 1000
+        runAsNonRoot: false
+    - name: explicitly-safe
+      image: nginx:1.27
+      securityContext:
+        allowPrivilegeEscalation: false
+        runAsUser: 1000
+        runAsNonRoot: true
+    - name: omitted-settings
+      image: nginx:1.27
+      securityContext: {}
+  initContainers:
+    - name: init-omitted-settings
+      image: busybox:1.36
+      securityContext: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: security-defaults-deployment
+spec:
+  template:
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsNonRoot: false
+        allowPrivilegeEscalation: true
+      containers:
+        - name: inherited-nonroot-false
+          image: nginx:1.27
+          securityContext: {}
+        - name: overrides-nonroot-safe
+          image: nginx:1.27
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+      initContainers:
+        - name: null-inherits-nonroot-false
+          image: busybox:1.36
+          securityContext:
+            runAsNonRoot: null
+"""
+        )
+
+        def rule_finding(resource: str, rule_id: str, container: str) -> dict[str, object]:
+            return next(
+                risk for risk in self.risks_for_resource(result, resource)
+                if risk["rule_id"] == rule_id and risk["container"] == container
+            )
+
+        explicitly_risky_ape = rule_finding(
+            "Pod/security-defaults-pod", "KGL-SEC-002", "explicitly-risky"
+        )
+        self.assertEqual(explicitly_risky_ape["level"], "MEDIUM")
+        self.assertEqual(
+            explicitly_risky_ape["path"],
+            "spec.containers[0].securityContext.allowPrivilegeEscalation",
+        )
+        explicitly_risky_nonroot = rule_finding(
+            "Pod/security-defaults-pod", "KGL-SEC-004", "explicitly-risky"
+        )
+        self.assertEqual(explicitly_risky_nonroot["level"], "MEDIUM")
+        self.assertEqual(
+            explicitly_risky_nonroot["path"],
+            "spec.containers[0].securityContext.runAsNonRoot",
+        )
+        self.assertFalse(
+            any(
+                risk["rule_id"] in {"KGL-SEC-002", "KGL-SEC-004"}
+                for risk in self.risks_for_resource(result, "Pod/security-defaults-pod")
+                if risk["container"] == "explicitly-safe"
+            )
+        )
+
+        omitted_ape = rule_finding(
+            "Pod/security-defaults-pod", "KGL-SEC-002", "omitted-settings"
+        )
+        self.assertEqual(omitted_ape["level"], "MEDIUM")
+        self.assertEqual(
+            omitted_ape["path"],
+            "spec.containers[2].securityContext.allowPrivilegeEscalation",
+        )
+        self.assertIn("未显式禁止", omitted_ape["message"])
+        omitted_nonroot = rule_finding(
+            "Pod/security-defaults-pod", "KGL-SEC-004", "omitted-settings"
+        )
+        self.assertEqual(omitted_nonroot["level"], "LOW")
+        self.assertEqual(
+            omitted_nonroot["path"],
+            "spec.containers[2].securityContext.runAsNonRoot",
+        )
+        self.assertIn("未显式强制", omitted_nonroot["message"])
+        self.assertNotIn("以 root 用户运行", omitted_nonroot["message"])
+        self.assertFalse(
+            any(
+                risk["rule_id"] == "KGL-SEC-003"
+                for risk in self.risks_for_resource(result, "Pod/security-defaults-pod")
+                if risk["container"] == "omitted-settings"
+            )
+        )
+
+        init_ape = rule_finding(
+            "Pod/security-defaults-pod", "KGL-SEC-002", "init-omitted-settings"
+        )
+        init_nonroot = rule_finding(
+            "Pod/security-defaults-pod", "KGL-SEC-004", "init-omitted-settings"
+        )
+        self.assertEqual(init_ape["level"], "MEDIUM")
+        self.assertEqual(
+            init_ape["path"],
+            "spec.initContainers[0].securityContext.allowPrivilegeEscalation",
+        )
+        self.assertEqual(init_nonroot["level"], "LOW")
+        self.assertEqual(
+            init_nonroot["path"],
+            "spec.initContainers[0].securityContext.runAsNonRoot",
+        )
+        self.assertEqual(init_nonroot["container_type"], "initContainer")
+
+        inherited_nonroot = rule_finding(
+            "Deployment/security-defaults-deployment",
+            "KGL-SEC-004",
+            "inherited-nonroot-false",
+        )
+        self.assertEqual(inherited_nonroot["level"], "MEDIUM")
+        self.assertEqual(
+            inherited_nonroot["path"],
+            "spec.template.spec.securityContext.runAsNonRoot",
+        )
+        inherited_ape = rule_finding(
+            "Deployment/security-defaults-deployment",
+            "KGL-SEC-002",
+            "inherited-nonroot-false",
+        )
+        self.assertEqual(inherited_ape["level"], "MEDIUM")
+        self.assertEqual(
+            inherited_ape["path"],
+            "spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation",
+        )
+        null_inherited_nonroot = rule_finding(
+            "Deployment/security-defaults-deployment",
+            "KGL-SEC-004",
+            "null-inherits-nonroot-false",
+        )
+        self.assertEqual(null_inherited_nonroot["level"], "MEDIUM")
+        self.assertEqual(
+            null_inherited_nonroot["path"],
+            "spec.template.spec.securityContext.runAsNonRoot",
+        )
+        self.assertEqual(null_inherited_nonroot["container_type"], "initContainer")
+        self.assertFalse(
+            any(
+                risk["rule_id"] in {"KGL-SEC-002", "KGL-SEC-004"}
+                for risk in self.risks_for_resource(
+                    result, "Deployment/security-defaults-deployment"
+                )
+                if risk["container"] == "overrides-nonroot-safe"
+            )
+        )
+
+    def test_new_rules_matrix_and_fixer_skip_in_both_modes(self) -> None:
+        """新规则在两种 Kind/容器位置保留身份，且 Safe/Strict 均不越权修复。"""
+        capabilities = {
+            "SYS_ADMIN": "HIGH", "SYS_MODULE": "HIGH", "SYS_RAWIO": "HIGH",
+            "SYS_PTRACE": "HIGH", "NET_ADMIN": "MEDIUM", "NET_RAW": "MEDIUM",
+            "DAC_OVERRIDE": "MEDIUM", "DAC_READ_SEARCH": "MEDIUM",
+        }
+        for kind in ("Pod", "Deployment"):
+            for container_field in ("containers", "initContainers"):
+                with self.subTest(kind=kind, container_field=container_field):
+                    pod_spec = {
+                        "securityContext": {
+                            "seccompProfile": {"type": "Unconfined"},
+                            # 非法 Pod 字段不能变成有效的容器能力。
+                            "capabilities": {"drop": ["ALL"]},
+                        },
+                        "containers": [],
+                        container_field: [{
+                            "name": "app", "image": "nginx:1.27",
+                            "securityContext": {
+                                "seccompProfile": None,
+                                "capabilities": {"add": list(capabilities)},
+                            },
+                        }],
+                    }
+                    resource = {
+                        "apiVersion": "v1" if kind == "Pod" else "apps/v1",
+                        "kind": kind, "metadata": {"name": "matrix"},
+                        "spec": pod_spec if kind == "Pod" else {"template": {"spec": pod_spec}},
+                    }
+                    result = self.scan_yaml(yaml.safe_dump(resource))
+                    findings = [r for r in result["risks"] if r["rule_id"] in {
+                        "KGL-SEC-007", "KGL-SEC-008", "KGL-SEC-009",
+                    }]
+                    prefix = "spec" if kind == "Pod" else "spec.template.spec"
+                    added = [r for r in findings if r["rule_id"] == "KGL-SEC-007"]
+                    self.assertEqual(len(added), len(capabilities))
+                    by_path = {r["path"]: r for r in added}
+                    for index, (capability, level) in enumerate(capabilities.items()):
+                        finding = by_path[
+                            f"{prefix}.{container_field}[0].securityContext.capabilities.add[{index}]"
+                        ]
+                        self.assertEqual(finding["level"], level)
+                        self.assertIn(capability, finding["message"])
+                    drop = next(r for r in findings if r["rule_id"] == "KGL-SEC-008")
+                    self.assertEqual(drop["level"], "LOW")
+                    self.assertEqual(drop["path"], f"{prefix}.{container_field}[0].securityContext.capabilities.drop")
+                    seccomp = next(r for r in findings if r["rule_id"] == "KGL-SEC-009")
+                    self.assertEqual(seccomp["level"], "MEDIUM")
+                    self.assertEqual(seccomp["path"], f"{prefix}.securityContext.seccompProfile")
+                    for finding in findings:
+                        self.assertEqual(finding["resource"], f"{kind}/matrix")
+                        self.assertEqual(finding["container"], "app")
+                        self.assertEqual(
+                            finding.get("container_type"),
+                            "initContainer" if container_field == "initContainers" else None,
+                        )
+                        self.assertIs(finding["auto_fixable"], False)
+                    for mode in ("safe", "strict"):
+                        with self.subTest(mode=mode):
+                            resources = deepcopy(result["resources"])
+                            original = deepcopy(resources)
+                            fixed, skipped = apply_fixes_to_resources(
+                                resources=resources, risks=findings, mode=mode,
+                            )
+                            self.assertEqual(fixed, [])
+                            self.assertEqual(len(skipped), len(findings))
+                            self.assertTrue(all(r["status"] == "skipped" for r in skipped))
+                            self.assertEqual(resources, original)
 
     def test_existing_rbac_service_and_ingress_examples_smoke(self) -> None:
         """既有 RBAC、Service、Ingress 示例继续产生稳定规则、等级和路径。"""

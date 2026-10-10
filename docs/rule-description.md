@@ -4,6 +4,10 @@
 
 危险系数由评分引擎根据风险等级、规则优先级和风险类别加权计算得到。后续版本如果调整评分策略，具体数值可能发生变化。
 
+本文列出的是当前实现的安全启发式检查，不是完整的 Kubernetes Pod Security Standards（PSS）合规引擎。容器级规则同时扫描 `containers` 与 `initContainers`；Pod 级规则只使用 Kubernetes 允许继承到容器的字段。
+
+当前扫描器以 Linux 工作负载为主要目标，尚未依据 `spec.os.name` 对 Linux 专属规则进行适用性过滤。Windows Pod 可能仍收到 capability、seccomp 等 Linux 配置检查告警；这些结果不能解释为完整 PSS 合规结论。
+
 ---
 
 ## 一、Workload 配置风险规则
@@ -20,11 +24,25 @@
 | KGL-SEC-001 | 容器启用 privileged                    | Workload |     16 |
 | KGL-SEC-002 | 容器允许 allowPrivilegeEscalation      | Workload |      6 |
 | KGL-SEC-003 | 容器使用 root 用户运行                     | Workload |     15 |
-| KGL-SEC-004 | 容器未启用 runAsNonRoot                 | Workload |      6 |
+| KGL-SEC-004 | 容器未启用 runAsNonRoot                 | Workload |    2–6 |
 | KGL-SEC-005 | 容器缺失 seccompProfile                | Workload |      2 |
 | KGL-SEC-006 | 容器未启用 readOnlyRootFilesystem       | Workload |      2 |
+| KGL-SEC-007 | 显式添加高风险 Linux capability（按能力分级） | Workload |   6–11 |
+| KGL-SEC-008 | 未显式配置 capabilities.drop: [ALL] | Workload |      2 |
+| KGL-SEC-009 | 显式使用 seccomp Unconfined | Workload |      6 |
 | KGL-RES-001 | 容器缺失 resources.limits              | Workload |      6 |
 | KGL-VOL-001 | 使用 hostPath（敏感路径 HIGH，其他路径 MEDIUM） | Workload |     11 |
+
+### SecurityContext 规则语义
+
+- `KGL-SEC-002`：`allowPrivilegeEscalation: true` 为 MEDIUM；字段缺失也为 MEDIUM，因为缺失时通常不会强制 `no_new_privs`，但这表示配置缺口，不表示进程已经提权。显式 false 在普通容器中不触发本项；它无法抵消 `privileged` 或 `SYS_ADMIN` 的影响，这些配置由 `KGL-SEC-001` 和 `KGL-SEC-007` 独立报告。
+- `KGL-SEC-004`：显式 `runAsNonRoot: false` 为 MEDIUM；字段缺失为 LOW，表示没有强制非 root，不能据此断言进程当前以 root 运行。Pod 级 `runAsNonRoot` 默认可继承，容器显式值优先。
+- `KGL-SEC-005`：只报告未显式配置或未提供 `type` 的 seccomp profile，风险为 LOW；节点或运行时的默认策略可能仍会应用 seccomp。该规则不校验未知枚举值或 `Localhost` profile 内容。
+- `KGL-SEC-007`：只检测明确列入高风险集合的 `capabilities.add`，不是把所有新增能力视为同等风险。HIGH：`SYS_ADMIN`、`SYS_MODULE`、`SYS_RAWIO`、`SYS_PTRACE`；MEDIUM：`NET_ADMIN`、`NET_RAW`、`DAC_OVERRIDE`、`DAC_READ_SEARCH`。未列入集合的能力（例如 `NET_BIND_SERVICE`）不触发此规则。实际影响仍取决于 namespace、挂载和运行时边界。
+- `KGL-SEC-008`：LOW 加固缺口；`capabilities.drop` 列表包含 `ALL` 即视为已配置，例如 `[ALL, NET_RAW]`，不要求列表恰好只有 `ALL`。不表示容器已添加危险 capability，也不代表完整通过或违反 PSS。
+- `KGL-SEC-009`：显式 `seccompProfile.type: Unconfined` 为 MEDIUM；`RuntimeDefault` 和 `Localhost` 不触发此项。扫描器不验证 Localhost profile 是否存在或内容是否安全。
+
+上述检查仅覆盖列出的字段和值，不验证完整 Kubernetes Schema，不代表完整 PSS Baseline 或 Restricted 合规结论。
 
 ---
 
@@ -102,6 +120,9 @@
 | Ingress TLS 缺失                  | 证书和域名配置依赖实际环境              |
 | Ingress snippet 注解              | 需要判断注解是否被业务依赖              |
 | hostPath 挂载                     | 需要判断是否存在替代方案或业务依赖          |
+| KGL-SEC-007 高风险 capability      | 需要结合实际容器职责判断是否必要          |
+| KGL-SEC-008 缺少 drop ALL           | 需要结合应用所需能力评估                |
+| KGL-SEC-009 seccomp Unconfined      | 需要评估应用兼容性和替代 profile          |
 
 ---
 
