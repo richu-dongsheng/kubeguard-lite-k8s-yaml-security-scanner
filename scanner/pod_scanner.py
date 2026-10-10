@@ -41,9 +41,10 @@ def make_risk(
     suggestion: str,
     path: str,
     container: str | None = None,
+    container_type: str | None = None,
     auto_fixable: bool = False,    
 ) -> Risk:
-    return {
+    risk = {
         "level": level,
         "rule_id": rule_id,
         "resource": resource,
@@ -56,6 +57,9 @@ def make_risk(
         "source_file": source_file,
         "auto_fixable": auto_fixable,
     }
+    if container_type is not None:
+        risk["container_type"] = container_type
+    return risk
 
 """从kubernetes资源中提取podSpec"""
 def get_pod_spec(resource: YamlResource) -> dict[str,Any] | None:
@@ -276,7 +280,7 @@ def scan_volume_risks(
 
     return risks
 
-"""扫描函数3：扫描 containers中的安全风险"""
+"""使用同一套规则扫描普通容器和 initContainers。"""
 def scan_container_risks(
     pod_spec: dict[str,Any],
     *,
@@ -286,185 +290,196 @@ def scan_container_risks(
     pod_spec_path: str,
 ) -> list[Risk]:
     risks:list[Risk] = []
-    
-    containers = pod_spec.get("containers") or []
 
-    if not isinstance(containers,list):
-        return risks
-        
-    for index,container in enumerate(containers):
-        if not isinstance(container,dict):
+    # initContainers 虽按顺序运行，但镜像、安全上下文和资源限制仍需逐容器审查。
+    for container_field in ("containers", "initContainers"):
+        containers = pod_spec.get(container_field) or []
+
+        if not isinstance(containers, list):
             continue
 
-        container_name = str(container.get("name",f"container-{index}"))
-        container_path = f"{pod_spec_path}.containers[{index}]"
+        is_init_container = container_field == "initContainers"
 
-        image = str(container.get("image",""))
+        for index,container in enumerate(containers):
+            if not isinstance(container,dict):
+                continue
 
-        if is_unpinned_image(image):
-            risks.append(make_risk( 
-                level = "MEDIUM",
-                rule_id = "KGL-IMG-001",
-                resource = resource,
-                namespace = namespace,
-                source_file = source_file,
-                container = container_name,
-                path = f"{container_path}.image",
-                message = f"容器{container_name}使用了 latest 或未固定的镜像标签，",
-                reason = "latest或缺失tag会导致部署结果不可复现，增加供应链和回滚风险",
-                suggestion = "使用明确版本标签，例如nginx:1.25.4,或使用镜像 digest。",
-                auto_fixable = False,
-            ))
-        
-        security_context,has_container_security_context = get_effective_security_context(
-            pod_spec,
-            container,
-        )
+            risk_start = len(risks)
+            container_name = str(container.get("name",f"container-{index}"))
+            container_path = f"{pod_spec_path}.{container_field}[{index}]"
 
-        pod_security_context = pod_spec.get("securityContext") or {}
-        container_security_context = container.get("securityContext")
+            image = str(container.get("image",""))
 
-        def security_context_path(field_name: str) -> str:
-            """定位字段实际配置处；缺失字段沿用容器级建议路径。"""
-            if (
-                isinstance(container_security_context, dict)
-                and field_name in container_security_context
-            ):
+            if is_unpinned_image(image):
+                risks.append(make_risk(
+                    level = "MEDIUM",
+                    rule_id = "KGL-IMG-001",
+                    resource = resource,
+                    namespace = namespace,
+                    source_file = source_file,
+                    container = container_name,
+                    path = f"{container_path}.image",
+                    message = f"容器{container_name}使用了 latest 或未固定的镜像标签，",
+                    reason = "latest或缺失tag会导致部署结果不可复现，增加供应链和回滚风险",
+                    suggestion = "使用明确版本标签，例如nginx:1.25.4,或使用镜像 digest。",
+                    auto_fixable = False,
+                ))
+
+            security_context,has_container_security_context = get_effective_security_context(
+                pod_spec,
+                container,
+            )
+
+            pod_security_context = pod_spec.get("securityContext") or {}
+            container_security_context = container.get("securityContext")
+
+            def security_context_path(field_name: str) -> str:
+                """定位字段实际配置处；缺失字段沿用容器级建议路径。"""
+                if (
+                    isinstance(container_security_context, dict)
+                    and field_name in container_security_context
+                ):
+                    return f"{container_path}.securityContext.{field_name}"
+                if (
+                    field_name in POD_INHERITABLE_SECURITY_CONTEXT_FIELDS
+                    and isinstance(pod_security_context, dict)
+                    and field_name in pod_security_context
+                ):
+                    return f"{pod_spec_path}.securityContext.{field_name}"
                 return f"{container_path}.securityContext.{field_name}"
-            if (
-                field_name in POD_INHERITABLE_SECURITY_CONTEXT_FIELDS
-                and isinstance(pod_security_context, dict)
-                and field_name in pod_security_context
-            ):
-                return f"{pod_spec_path}.securityContext.{field_name}"
-            return f"{container_path}.securityContext.{field_name}"
 
-        if not has_container_security_context:
-            risks.append(make_risk(
-                level="LOW",
-                rule_id="KGL-SEC-000",
-                resource=resource,
-                namespace=namespace,
-                source_file=source_file,
-                container=container_name,
-                path=f"{container_path}.securityContext",
-                message=f"容器 {container_name} 未显式声明 securityContext",
-                reason="缺少 securityContext 会导致容器安全约束不明确，不利于最小权限配置。",
-                suggestion="为容器添加 securityContext，并显式声明权限约束。",
-                auto_fixable=True,
-            ))
+            if not has_container_security_context:
+                risks.append(make_risk(
+                    level="LOW",
+                    rule_id="KGL-SEC-000",
+                    resource=resource,
+                    namespace=namespace,
+                    source_file=source_file,
+                    container=container_name,
+                    path=f"{container_path}.securityContext",
+                    message=f"容器 {container_name} 未显式声明 securityContext",
+                    reason="缺少 securityContext 会导致容器安全约束不明确，不利于最小权限配置。",
+                    suggestion="为容器添加 securityContext，并显式声明权限约束。",
+                    auto_fixable=True,
+                ))
 
-        if security_context.get("privileged") is True:
-            risks.append(make_risk(
-                level="HIGH",
-                rule_id="KGL-SEC-001",
-                resource=resource,
-                namespace=namespace,
-                source_file=source_file,
-                container=container_name,
-                path=security_context_path("privileged"),
-                message=f"容器 {container_name} 启用了 privileged",
-                reason="特权容器会显著削弱容器与宿主机之间的隔离边界。",
-                suggestion="删除 privileged: true，除非该容器确实是受信任的系统级组件。",
-                auto_fixable=True,
-            ))
+            if security_context.get("privileged") is True:
+                risks.append(make_risk(
+                    level="HIGH",
+                    rule_id="KGL-SEC-001",
+                    resource=resource,
+                    namespace=namespace,
+                    source_file=source_file,
+                    container=container_name,
+                    path=security_context_path("privileged"),
+                    message=f"容器 {container_name} 启用了 privileged",
+                    reason="特权容器会显著削弱容器与宿主机之间的隔离边界。",
+                    suggestion="删除 privileged: true，除非该容器确实是受信任的系统级组件。",
+                    auto_fixable=True,
+                ))
 
-        if security_context.get("allowPrivilegeEscalation") is True:
-            risks.append(make_risk(
-                level="MEDIUM",
-                rule_id="KGL-SEC-002",
-                resource=resource,
-                namespace=namespace,
-                source_file=source_file,
-                container=container_name,
-                path=security_context_path("allowPrivilegeEscalation"),
-                message=f"容器 {container_name} 允许权限提升",
-                reason="allowPrivilegeEscalation: true 可能让容器内进程获得额外权限。",
-                suggestion="设置 allowPrivilegeEscalation: false。",
-                auto_fixable=True,
-            ))
+            if security_context.get("allowPrivilegeEscalation") is True:
+                risks.append(make_risk(
+                    level="MEDIUM",
+                    rule_id="KGL-SEC-002",
+                    resource=resource,
+                    namespace=namespace,
+                    source_file=source_file,
+                    container=container_name,
+                    path=security_context_path("allowPrivilegeEscalation"),
+                    message=f"容器 {container_name} 允许权限提升",
+                    reason="allowPrivilegeEscalation: true 可能让容器内进程获得额外权限。",
+                    suggestion="设置 allowPrivilegeEscalation: false。",
+                    auto_fixable=True,
+                ))
 
-        if security_context.get("runAsUser") == 0:
-            risks.append(make_risk(
-                level="HIGH",
-                rule_id="KGL-SEC-003",
-                resource=resource,
-                namespace=namespace,
-                source_file=source_file,
-                container=container_name,
-                path=security_context_path("runAsUser"),
-                message=f"容器 {container_name} 显式以 root 用户运行",
-                reason="runAsUser: 0 表示容器进程以 root 身份运行，可能扩大攻击影响。",
-                suggestion="设置 runAsUser 为非 0 用户，例如 1000，并配合 runAsNonRoot: true。",
-                auto_fixable=False,
-            ))
+            if security_context.get("runAsUser") == 0:
+                risks.append(make_risk(
+                    level="HIGH",
+                    rule_id="KGL-SEC-003",
+                    resource=resource,
+                    namespace=namespace,
+                    source_file=source_file,
+                    container=container_name,
+                    path=security_context_path("runAsUser"),
+                    message=f"容器 {container_name} 显式以 root 用户运行",
+                    reason="runAsUser: 0 表示容器进程以 root 身份运行，可能扩大攻击影响。",
+                    suggestion="设置 runAsUser 为非 0 用户，例如 1000，并配合 runAsNonRoot: true。",
+                    auto_fixable=False,
+                ))
 
-        if security_context.get("runAsNonRoot") is False:
-            risks.append(make_risk(
-                level="MEDIUM",
-                rule_id="KGL-SEC-004",
-                resource=resource,
-                namespace=namespace,
-                source_file=source_file,
-                container=container_name,
-                path=security_context_path("runAsNonRoot"),
-                message=f"容器 {container_name} 未要求以非 root 用户运行",
-                reason="runAsNonRoot: false 可能允许容器以 root 身份运行。",
-                suggestion="设置 runAsNonRoot: true。",
-                auto_fixable=True,
-            ))
+            if security_context.get("runAsNonRoot") is False:
+                risks.append(make_risk(
+                    level="MEDIUM",
+                    rule_id="KGL-SEC-004",
+                    resource=resource,
+                    namespace=namespace,
+                    source_file=source_file,
+                    container=container_name,
+                    path=security_context_path("runAsNonRoot"),
+                    message=f"容器 {container_name} 未要求以非 root 用户运行",
+                    reason="runAsNonRoot: false 可能允许容器以 root 身份运行。",
+                    suggestion="设置 runAsNonRoot: true。",
+                    auto_fixable=True,
+                ))
 
-        if "seccompProfile" not in security_context:
-            risks.append(make_risk(
-                level="LOW",
-                rule_id="KGL-SEC-005",
-                resource=resource,
-                namespace=namespace,
-                source_file=source_file,
-                container=container_name,
-                path=security_context_path("seccompProfile"),
-                message=f"容器 {container_name} 未配置 seccompProfile",
-                reason="seccomp 可以限制容器进程可使用的系统调用，减少内核攻击面。",
-                suggestion="设置 seccompProfile.type: RuntimeDefault。",
-                auto_fixable=True,
-            ))
+            if "seccompProfile" not in security_context:
+                risks.append(make_risk(
+                    level="LOW",
+                    rule_id="KGL-SEC-005",
+                    resource=resource,
+                    namespace=namespace,
+                    source_file=source_file,
+                    container=container_name,
+                    path=security_context_path("seccompProfile"),
+                    message=f"容器 {container_name} 未配置 seccompProfile",
+                    reason="seccomp 可以限制容器进程可使用的系统调用，减少内核攻击面。",
+                    suggestion="设置 seccompProfile.type: RuntimeDefault。",
+                    auto_fixable=True,
+                ))
 
-        if security_context.get("readOnlyRootFilesystem") is not True:
-            risks.append(make_risk(
-                level="LOW",
-                rule_id="KGL-SEC-006",
-                resource=resource,
-                namespace=namespace,
-                source_file=source_file,
-                container=container_name,
-                path=security_context_path("readOnlyRootFilesystem"),
-                message=f"容器 {container_name} 未开启只读根文件系统",
-                reason="只读根文件系统可以降低攻击者在容器内写入恶意文件的风险。",
-                suggestion="在确认业务不依赖写入根文件系统后，设置 readOnlyRootFilesystem: true。",
-                auto_fixable=True,
-            ))
+            if security_context.get("readOnlyRootFilesystem") is not True:
+                risks.append(make_risk(
+                    level="LOW",
+                    rule_id="KGL-SEC-006",
+                    resource=resource,
+                    namespace=namespace,
+                    source_file=source_file,
+                    container=container_name,
+                    path=security_context_path("readOnlyRootFilesystem"),
+                    message=f"容器 {container_name} 未开启只读根文件系统",
+                    reason="只读根文件系统可以降低攻击者在容器内写入恶意文件的风险。",
+                    suggestion="在确认业务不依赖写入根文件系统后，设置 readOnlyRootFilesystem: true。",
+                    auto_fixable=True,
+                ))
 
-        resources = container.get("resources") or {}
+            resources = container.get("resources") or {}
 
-        if not isinstance(resources,dict):
-            resources = {}
+            if not isinstance(resources,dict):
+                resources = {}
 
-        limits = resources.get("limits") or {}
+            limits = resources.get("limits") or {}
 
-        if not isinstance(limits, dict) or not limits:
-            risks.append(make_risk(
-                level="MEDIUM",
-                rule_id="KGL-RES-001",
-                resource=resource,
-                namespace=namespace,
-                source_file=source_file,
-                container=container_name,
-                path=f"{container_path}.resources.limits",
-                message=f"容器 {container_name} 没有设置 resources.limits",
-                reason="缺少资源限制可能导致容器异常占用 CPU 或内存，影响节点和其他工作负载稳定性。",
-                suggestion="为容器添加 CPU 和 memory 的 resources.limits。",
-                auto_fixable=False,
-            ))
+            if not isinstance(limits, dict) or not limits:
+                risks.append(make_risk(
+                    level="MEDIUM",
+                    rule_id="KGL-RES-001",
+                    resource=resource,
+                    namespace=namespace,
+                    source_file=source_file,
+                    container=container_name,
+                    path=f"{container_path}.resources.limits",
+                    message=f"容器 {container_name} 没有设置 resources.limits",
+                    reason="缺少资源限制可能导致容器异常占用 CPU 或内存，影响节点和其他工作负载稳定性。",
+                    suggestion="为容器添加 CPU 和 memory 的 resources.limits。",
+                    auto_fixable=False,
+                ))
+
+            if is_init_container:
+                # 现有 Fixer 只按 containers 名称定位；init Finding 禁止使用其修复策略。
+                for risk in risks[risk_start:]:
+                    risk["container_type"] = "initContainer"
+                    risk["auto_fixable"] = False
 
     return risks
 

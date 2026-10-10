@@ -88,7 +88,7 @@ def make_skip_action(
     reason: str,
 ) -> FixAction:
     """记录未自动修复的风险。"""
-    return make_action(
+    action = make_action(
         status="skipped",
         rule_id=str(risk.get("rule_id", "-")),
         resource=str(risk.get("resource", "-")),
@@ -98,6 +98,9 @@ def make_skip_action(
         new_value="-",
         message=reason,
     )
+    if risk.get("auto_fixable") is False:
+        action["auto_fixable"] = False
+    return action
 
 
 def get_resource_ref(resource: YamlResource) -> str:
@@ -516,6 +519,27 @@ def apply_fixes_to_resources(
     for risk in risks:
         rule_id = str(risk.get("rule_id", "")).strip()
 
+        if (
+            risk.get("container_type") == "initContainer"
+            or ".initContainers[" in str(risk.get("path", ""))
+        ):
+            skipped_actions.append(
+                make_skip_action(
+                    risk=risk,
+                    reason="initContainer 风险当前不支持自动修复，已跳过以避免修改普通容器。",
+                )
+            )
+            continue
+
+        if risk.get("auto_fixable") is False:
+            skipped_actions.append(
+                make_skip_action(
+                    risk=risk,
+                    reason="该风险明确标记为不可自动修复，已跳过。",
+                )
+            )
+            continue
+
         if rule_id not in SUPPORTED_FIX_RULES:
             skipped_actions.append(
                 make_skip_action(
@@ -582,14 +606,26 @@ def apply_pod_spec_baseline_fixes(
     *,
     resources: list[YamlResource],
     mode: FixMode,
+    risks: list[Risk] | None = None,
 ) -> list[FixAction]:
     """
     对 PodSpec 级别字段做兜底修复。
 
     这层不依赖 risk 匹配结果，直接检查 YAML 资源本身。
     用于避免 hostNetwork / hostPID / hostIPC 这类字段因 risk 匹配失败而漏修。
+    若同一字段存在明确不可自动修复的 Finding，则保留该字段并由 skipped 记录。
     """
     actions: list[FixAction] = []
+    known_risks = risks or []
+
+    def has_non_fixable_finding(resource: YamlResource, field_name: str) -> bool:
+        path_suffix = f".{field_name}".casefold()
+        return any(
+            risk.get("auto_fixable") is False
+            and str(risk.get("path", "")).strip().casefold().endswith(path_suffix)
+            and risk_matches_resource(risk, resource)
+            for risk in known_risks
+        )
 
     safe_pod_spec_fields = {
         "hostNetwork": False,
@@ -611,6 +647,9 @@ def apply_pod_spec_baseline_fixes(
         resource_ref = get_resource_ref(resource)
 
         for field_name, new_value in safe_pod_spec_fields.items():
+            if has_non_fixable_finding(resource, field_name):
+                continue
+
             old_value = pod_spec.get(field_name)
 
             if old_value is not True:
@@ -635,6 +674,9 @@ def apply_pod_spec_baseline_fixes(
             continue
 
         for field_name, new_value in strict_pod_spec_fields.items():
+            if has_non_fixable_finding(resource, field_name):
+                continue
+
             old_value = pod_spec.get(field_name)
 
             if old_value is False:
@@ -785,6 +827,10 @@ def remove_skipped_actions_that_were_fixed(
     filtered: list[FixAction] = []
 
     for skipped_action in skipped_actions:
+        if skipped_action.get("auto_fixable") is False:
+            filtered.append(skipped_action)
+            continue
+
         already_fixed = any(
             fixed_action_matches_skipped_action(
                 fixed_action=fixed_action,
@@ -955,6 +1001,7 @@ def fix_path(
     baseline_fixed_actions = apply_pod_spec_baseline_fixes(
         resources=fixed_resources,
         mode=normalized_mode,
+        risks=risks,
     )
 
     fixed_actions = merge_fix_actions(
