@@ -6,7 +6,7 @@
 
 本文列出的是当前实现的安全启发式检查，不是完整的 Kubernetes Pod Security Standards（PSS）合规引擎。容器级规则同时扫描 `containers` 与 `initContainers`；Pod 级规则只使用 Kubernetes 允许继承到容器的字段。
 
-当前扫描器以 Linux 工作负载为主要目标，尚未依据 `spec.os.name` 对 Linux 专属规则进行适用性过滤。Windows Pod 可能仍收到 capability、seccomp 等 Linux 配置检查告警；这些结果不能解释为完整 PSS 合规结论。
+当前扫描器以 Linux 工作负载为主要目标，未提供 Windows 安全基线。机器入口 `scan-json` 会跳过显式声明 `spec.os.name: windows` 的 Pod/Deployment，并通过 Contract 状态表达覆盖限制；旧的人类可读 `scan` 命令仍可能对这类资源运行 Linux 专属规则并产生告警。任何一种结果都不能解释为完整 PSS 合规结论。
 
 ---
 

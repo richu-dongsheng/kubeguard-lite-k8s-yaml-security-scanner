@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: api-pod
+  namespace: test
+spec:
+  containers:
+    - name: api
+      image: nginx:1.27.3
+      securityContext:
+        privileged: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: team-a
+spec:
+  template:
+    spec:
+      containers:
+        - name: worker
+          image: busybox:1.36.1
+          securityContext:
+            privileged: true

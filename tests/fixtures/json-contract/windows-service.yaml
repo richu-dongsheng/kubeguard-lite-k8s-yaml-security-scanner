@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: windows-pod
+  labels: {app: windows}
+spec:
+  os: {name: windows}
+  containers:
+    - name: app
+      image: windows:1
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: windows-service
+spec:
+  selector: {app: windows}
+  ports:
+    - port: 80
+      targetPort: 8080

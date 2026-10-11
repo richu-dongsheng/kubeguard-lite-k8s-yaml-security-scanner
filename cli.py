@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Any
+import json
 
 import typer
 from rich.console import Console
@@ -7,6 +8,7 @@ from rich.table import Table
 
 from scanner.parser import get_resource_identity
 from scanner.scan_engine import scan_path, get_resources, get_risks, get_summary
+from scanner.json_contract import scan_path_contract
 
 from reporter.markdown_report import generate_markdown_report
 from reporter.html_report import generate_html_report
@@ -282,6 +284,23 @@ def scan(path: str):
     render_score_summary(summary)
     render_auto_fix_summary(risks)
     render_recommendations(summary)
+
+
+@cli.command("scan-json")
+def scan_json(path: str):
+    """以 JSON Contract v1 扫描 YAML；不执行修复或写入输入文件。"""
+    contract = scan_path_contract(path)
+    # 使用 ASCII 转义，避免 Windows 控制台编码影响 Go Adapter 读取 JSON。
+    typer.echo(json.dumps(contract, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
+
+    for diagnostic in contract["diagnostics"]:
+        typer.echo(
+            f"{diagnostic['code']}: {diagnostic['message']}",
+            err=True,
+        )
+
+    if contract["status"] == "FAILED":
+        raise typer.Exit(code=1)
 
 
 

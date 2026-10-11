@@ -1,0 +1,12 @@
+# Python 3.13.11 Windows x64 validation set; runtime and transitive versions are pinned.
+PyYAML==6.0.3
+typer==0.26.7
+rich==15.0.0
+click==8.4.1
+colorama==0.4.6
+typing_extensions==4.15.0
+shellingham==1.5.4
+annotated-doc==0.0.4
+markdown-it-py==4.2.0
+mdurl==0.1.2
+Pygments==2.20.0

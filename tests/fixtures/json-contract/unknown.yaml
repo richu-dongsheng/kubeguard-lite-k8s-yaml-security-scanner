@@ -1,0 +1,4 @@
+apiVersion: example/v1
+kind: Widget
+metadata:
+  name: x

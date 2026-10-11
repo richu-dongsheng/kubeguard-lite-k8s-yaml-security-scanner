@@ -30,7 +30,32 @@ SCANNED_RESOURCE_KINDS = {
 web: 上传 YAML 后，先解析为resources再调用本函数
 Desktop: 读取文件后，复用本函数
 """
-def scan_resources(resources: list[YamlResource]) -> ScanResult:
+def is_windows_workload(resource: YamlResource) -> bool:
+    """判断当前支持的 Workload 是否显式声明为 Windows。"""
+    kind = str(resource.get("kind", "")).strip()
+    if kind == "Pod":
+        pod_spec = resource.get("spec")
+    elif kind == "Deployment":
+        deployment_spec = resource.get("spec")
+        template = deployment_spec.get("template") if isinstance(deployment_spec, dict) else None
+        pod_spec = template.get("spec") if isinstance(template, dict) else None
+    else:
+        return False
+
+    if not isinstance(pod_spec, dict):
+        return False
+    pod_os = pod_spec.get("os")
+    return (
+        isinstance(pod_os, dict)
+        and str(pod_os.get("name", "")).strip().casefold() == "windows"
+    )
+
+
+def scan_resources(
+    resources: list[YamlResource],
+    *,
+    skip_windows_workloads: bool = False,
+) -> ScanResult:
 
     if not resources:
         raise ValueError("扫描输入中没有有效 Kubernetes 资源，无法判定扫描结果。")
@@ -45,7 +70,15 @@ def scan_resources(resources: list[YamlResource]) -> ScanResult:
     
     risks: list[Risk] = []
 
-    risks.extend(scan_pod_resources(resources))
+    workload_resources = resources
+    if skip_windows_workloads:
+        workload_resources = [
+            resource
+            for resource in resources
+            if not is_windows_workload(resource)
+        ]
+
+    risks.extend(scan_pod_resources(workload_resources))
     risks.extend(scan_rbac_resources(resources))
     risks.extend(scan_service_resources(resources))
 
