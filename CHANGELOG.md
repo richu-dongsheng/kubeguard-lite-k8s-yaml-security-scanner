@@ -2,7 +2,7 @@
 
 本文件记录面向用户的重要版本变化。JSON Contract 协议版本与扫描器软件版本分别管理。
 
-## v0.2.0 — 源码/API 集成发行版准备中（尚未发布）
+## v0.2.0 — 源码/API 集成发行版准备中
 
 - 修复 `hostPath` 字段识别和 Workload 风险字段路径，统一 ServiceAccount Token 规则的 canonical Rule ID，并改进容器/volume 索引定位。
 - 修正 Pod 与容器 `SecurityContext` 字段作用域及继承/覆盖处理；容器专属字段不再从 Pod 级配置误继承。

@@ -1,5 +1,7 @@
 # KubeGuard-Lite
 
+**语言 / Language：** **简体中文** | [English](README_EN.md)
+
 **KubeGuard-Lite** 是 Kubernetes YAML 静态配置安全扫描器，也提供可由其他程序调用的 Python 扫描引擎。它在部署前分析清单中的常见安全配置和暴露面风险，并保留规则、资源位置与覆盖状态供开发者或集成平台审查。
 
 项目定位为静态扫描组件，不是完整云安全平台、准入控制器或 Kubernetes 策略合规认证工具。
@@ -102,7 +104,7 @@ Go、Python 或其他语言的安全平台可以将 `scan-json` 作为外部静�
 
 ## Releases / 版本说明
 
-- **v0.2.0 — 源码/API 集成发行版准备中**：扫描器版本为 `0.2.0`，JSON Contract 仍为 `1.0`。本次发行内容面向源码运行和机器集成；本仓库没有为 v0.2.0 发布新的桌面二进制文件。
+- **v0.2.0 — 源码/API 集成发行版(已发布)**：扫描器版本为 `0.2.0`，JSON Contract 仍为 `1.0`。本次发行内容面向源码运行和机器集成；本仓库没有为 v0.2.0 发布新的桌面二进制文件。
 - **v0.1.0 — 历史桌面版**：此前发布的桌面工具、人工 CLI、安全扫描与报告版本。Windows x86_64 旧资产名为 `kubeguard-lite-desktop-windows-x86_64.exe`，Linux x86_64 旧资产名为 `kubeguard-lite-desktop-linux-x86_64.AppImage`。请从 [v0.1.0 Release 页面](https://github.com/richu-dongsheng/kubeguard-lite-k8s-yaml-security-scanner/releases/tag/v0.1.0) 下载历史资产，不要将这些二进制文件当作 v0.2.0。
 
 查看[所有 GitHub Releases](https://github.com/richu-dongsheng/kubeguard-lite-k8s-yaml-security-scanner/releases)及 [CHANGELOG](CHANGELOG.md)。

@@ -83,4 +83,4 @@ venv\Scripts\python.exe cli.py scan-json <YAML 文件或目录>
 
 该依赖锁在 Python 3.13.11 Windows x64 环境验证；`py -3.13` 只选择 3.13 系列，发行复现时还必须确认 `python --version` 精确为 3.13.11，必要时使用该解释器的绝对路径。升级 Python 或任一依赖时，应重新运行完整 unittest、JSON CLI Contract Tests 和真实 YAML 扫描，并将解析后的全部直接/传递依赖版本固定回 `requirements-scan.txt`。输入文件只读解析，JSON 入口不会改写 YAML。
 
-源码准备版本为 `0.2.0`；Git Tag/Release 由项目负责人在审查和提交后单独创建，本工作区版本值不代表已经发布。历史桌面版 `v0.1.0` 与本扫描器版本并存，不应将旧版桌面二进制标记为 `v0.2.0`。审核后的发行必须记录完整 Git Commit SHA、精确 Python 版本和 `requirements-scan.txt` 的 SHA-256（Windows PowerShell 可用 `Get-FileHash requirements-scan.txt -Algorithm SHA256` 计算）。Adapter 可同时校验 `schema_version` 与 `scanner_version`。协议结构升级按上一节规则单独提升 `schema_version`。
+源码准备版本为 `0.2.0`。历史桌面版 `v0.1.0` 与本扫描器版本并存，不应将旧版桌面二进制标记为 `v0.2.0`。审核后的发行必须记录完整 Git Commit SHA、精确 Python 版本和 `requirements-scan.txt` 的 SHA-256（Windows PowerShell 可用 `Get-FileHash requirements-scan.txt -Algorithm SHA256` 计算）。Adapter 可同时校验 `schema_version` 与 `scanner_version`。协议结构升级按上一节规则单独提升 `schema_version`。
